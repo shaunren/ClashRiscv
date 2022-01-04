@@ -17,20 +17,23 @@ import ClashRiscv.MMIO
 
 pipeline
   :: HiddenClockResetEnable dom
-  => Signal dom (BitVector 8) -- LED signals
+  => Signal dom (BitVector 8) -- ^ LED signals
+
+  -- Signal dom (Instruction, Bool, Bool)
 pipeline =
   let
     ---- Fetch
-    if_pc = liftA2 fromMaybe if_pcReg ex_maybeJAddr
-    if_pcReg = register 0 (liftA2 nextPC if_pc mem_loadStall)
-      where
-        nextPC pc stall
-          | stall = pc
-          | otherwise = pc + 4
+    if_pc = liftA2 fromMaybe (liftA2 curPc if_pcReg mem_loadStall) ex_maybeJAddr
+      where curPc pc loadStall
+              | loadStall = pc - 4
+              | otherwise = pc
+    if_pcReg = register 0 $ fmap (+4) if_pc
+
 
     instrWord = instrRom "rom/rom.bin" $ fmap (truncateB . (`shiftR` 2)) if_pc
 
     ---- Decode
+    -- In case of load stall, bring back the instruction from EX and bubble EX.
     id_pc' = register 0 if_pc
     id_pc = mux mem_loadStall ex_pc id_pc'
 
@@ -51,9 +54,18 @@ pipeline =
     ex_sourceRegs = register (0, 0) instr_readRegs
 
     ex_instr = mux (mem_jumpStall .||. mem_loadStall) (pure Nop) id_instrOut
-    
-    ex_valsIn = fromMaybe <$> id_regsOut <*> (liftA2 (<|>) mem_maybeFwd wb_maybeFwd)
-    
+
+    -- Forward registers from WB and MEM if necessary.
+    ex_wbFwd = wbForwardReg <$> wb_writeReg <*> ex_sourceRegs <*> id_regsOut
+      where
+        wbForwardReg wr rs ido = fromMaybe ido $ do
+          (rd, x) <- wr
+          return $ forwardReg rd x rs ido
+
+    ex_valsIn = mux (mem_jumpStall .||. mem_loadStall)
+                ex_wbFwd
+                (forwardReg <$> (bitCoerce . getDstReg <$> mem_instr) <*> ex_out <*> ex_sourceRegs <*> ex_wbFwd)
+
     (ex_out', ex_maybeJAddr) = unbundle $ liftA3 runExOp ex_instr ex_valsIn ex_pc
       where
         runExOp :: Instruction -> (Value, Value) -> Value -> (Value, Maybe Value)
@@ -84,13 +96,9 @@ pipeline =
     mem_loadStall = liftA2 shouldLoadStall mem_instr ex_sourceRegs
       where
         shouldLoadStall (WithDstReg rd' (Load {})) (rs1, rs2) =
-          let rd = fromIntegral rd'
+          let rd = bitCoerce rd'
           in  rd /= 0 && (rd == rs1 || rd == rs2)
         shouldLoadStall _ _ = False
-
-    mem_maybeFwd = mux (mem_jumpStall .||. mem_loadStall)
-                       (pure Nothing)
-                       (forwardReg <$> (fromIntegral . getDstReg <$> mem_instr) <*> ex_out <*> ex_sourceRegs <*> id_regsOut)
 
     mem_dataRamIn = runMemOp <$> mem_instr <*> ex_out <*> mem_valsIn
       where
@@ -119,46 +127,40 @@ pipeline =
 
     ---- Writeback
 
-    (wb_mmioVals, wb_maybeMmioOut) = handleMMIO mem_dataRamIn
+    (wb_mmioVals, wb_maybeMMIOOut) = handleMMIO mem_dataRamIn
     -- Only access data RAM if the RAM access is not MMIO.
-    dataRamOut = dataRAM $ mux (isJust <$> wb_maybeMmioOut) (pure def) mem_dataRamIn
+    wb_dataRamOut = dataRAM $ mux (isJust <$> wb_maybeMMIOOut) (pure def) mem_dataRamIn
+
+    wb_ramVal = liftA2 fromMaybe wb_dataRamOut wb_maybeMMIOOut
 
     wb_instr = register Nop mem_instr
-    wb_writeReg = runWbOp <$> wb_instr <*> mem_out <*> dataRamOut
+    wb_writeReg = runWbOp <$> wb_instr <*> mem_out <*> wb_ramVal
       where
         runWbOp :: Instruction -> Value -> DataRAMOut -> Maybe (RegAddr, Value)
         runWbOp (WithDstReg rd (Load {})) _ val = Just (bitCoerce rd, val)
         runWbOp (WithDstReg rd _)         val _ = Just (bitCoerce rd, val)
         runWbOp _ _ _ = Nothing
 
-    wb_maybeFwd = wbForwardReg <$> wb_writeReg <*> ex_sourceRegs <*> id_regsOut
-      where
-        wbForwardReg wr rs ido = do
-          (rd, x) <- wr
-          forwardReg rd x rs ido
-
   in
     mmioLEDs <$> wb_mmioVals
 
 -- |Extract register indicies to be read from an instruction.
 extractReadRegs :: Instruction -> (RegAddr, RegAddr)
-extractReadRegs (Branch _ rs1 rs2 _) = (fromIntegral rs1, fromIntegral rs2)
-extractReadRegs (Store _ rs1 rs2 _)  = (fromIntegral rs1, fromIntegral rs2)
+extractReadRegs (Branch _ rs1 rs2 _) = (bitCoerce rs1, bitCoerce rs2)
+extractReadRegs (Store _ rs1 rs2 _)  = (bitCoerce rs1, bitCoerce rs2)
 extractReadRegs (WithDstReg _ instr) = case instr of
-  (Jalr rs _)        -> (fromIntegral rs, 0)
-  (Load _ rs _)      -> (fromIntegral rs, 0)
-  (AluImm _ rs _)    -> (fromIntegral rs, 0)
-  (AluReg _ rs1 rs2) -> (fromIntegral rs1, fromIntegral rs2)
+  (Jalr rs _)        -> (bitCoerce rs, 0)
+  (Load _ rs _)      -> (bitCoerce rs, 0)
+  (AluImm _ rs _)    -> (bitCoerce rs, 0)
+  (AluReg _ rs1 rs2) -> (bitCoerce rs1, bitCoerce rs2)
   _                  -> (0, 0)
 extractReadRegs _ = (0, 0)
 
-forwardReg :: RegAddr -> Value -> (RegAddr, RegAddr) -> (Value, Value) -> Maybe (Value, Value)
-forwardReg rd x (rs1, rs2) (y, z)
-  | rd == 0                = Nothing
-  | rd == rs1 && rd /= rs2 = Just (x, z)
-  | rd /= rs1 && rd == rs2 = Just (y, x)
-  | rd == rs1 && rd == rs2 = Just (x, x)
-  | otherwise = Nothing
+forwardReg :: RegAddr -> Value -> (RegAddr, RegAddr) -> (Value, Value) -> (Value, Value)
+forwardReg 0 _ _ xs = xs
+forwardReg rd x (rs1, rs2) (y, z) =
+  ( if rd == rs1 then x else y
+  , if rd == rs2 then x else z)
 
 --type RegFile = Vec 31 Value
 
@@ -169,9 +171,9 @@ regFile :: HiddenClockResetEnable dom
   => Signal dom (RegReadAddr, RegReadAddr)
   -> Signal dom (Maybe (RegWriteAddr, Value))
   -> Signal dom (Value, Value)
-regFile rd wr =
+regFile rs wr =
   let
-    (rs1, rs2) = unbundle rd
+    (rs1, rs2) = unbundle rs
     sinkR0 w = do
       (ix, v) <- w
       guard (ix /= 0)

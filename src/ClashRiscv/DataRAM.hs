@@ -21,7 +21,7 @@ dataRAM dataRamIn = calcReadVal <$> oldRamIn <*> ramOut
   where
     ram = blockRamPow2 (replicate d1024 0)
 
-    a = (complement 3 .&.) . truncateB . addr <$> dataRamIn
+    a = truncateB . (`shiftR` 2) . addr <$> dataRamIn
     wr' = calcWriteVal <$> dataRamIn
     wr = liftA2 (,) . Just <$> a <*> wr'
 

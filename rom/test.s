@@ -1,7 +1,14 @@
 .equ LED_ADDR,      0x40000000
-#  Calculate fib(12)
-        li a0, 10
-        addi a0, a0, 2
+        #  Calculate fib(12)        
+        li x1, 6
+        sw x1, 4(x0)
+
+        lbu a0, 4(x0)
+        lbu t0, 4(x0)
+        add a0, a0, t0
+
+        li t3, LED_ADDR
+        sb a0, 0(t3)
 
         addi t3, a0, -1
 
