@@ -12,14 +12,30 @@ import ClashRiscv.ROM
 import ClashRiscv.DataRAM
 import ClashRiscv.MMIO
 
---createDomain vSystem{vName="DomInput", vPeriod=20000}
---createDomain vSystem{vName="Dom50", vPeriod=50000}
+
+createDomain vSystem{vName="DomInput", vPeriod=20000} -- 50 MHz
+createDomain vSystem{vName="Dom150", vPeriod=6667}    -- 150 MHz
+
+
+{-# ANN topEntity
+  (Synthesize
+    { t_name   = "cpu"
+    , t_inputs = [PortName "CLOCK_50"]
+    , t_output = PortName "LED"
+    }) #-}
+topEntity ::
+  Clock DomInput
+  -> Signal DomInput Bool        -- ^ Reset signal
+  -> Signal Dom150 (BitVector 8) -- ^ LED outputs
+topEntity clk rst = exposeClockResetEnable pipeline pllOut rstSync enableGen
+  where
+    (pllOut, pllStable) = altpll @Dom150 (SSymbol @"altpll150") clk (unsafeFromLowPolarity rst)
+    rstSync             = resetSynchronizer pllOut (unsafeFromLowPolarity pllStable) enableGen
+
 
 pipeline
   :: HiddenClockResetEnable dom
   => Signal dom (BitVector 8) -- ^ LED signals
-
-  -- Signal dom (Instruction, Bool, Bool)
 pipeline =
   let
     ---- Fetch
@@ -144,6 +160,7 @@ pipeline =
   in
     mmioLEDs <$> wb_mmioVals
 
+
 -- |Extract register indicies to be read from an instruction.
 extractReadRegs :: Instruction -> (RegAddr, RegAddr)
 extractReadRegs (Branch _ rs1 rs2 _) = (bitCoerce rs1, bitCoerce rs2)
@@ -156,16 +173,17 @@ extractReadRegs (WithDstReg _ instr) = case instr of
   _                  -> (0, 0)
 extractReadRegs _ = (0, 0)
 
+
 forwardReg :: RegAddr -> Value -> (RegAddr, RegAddr) -> (Value, Value) -> (Value, Value)
 forwardReg 0 _ _ xs = xs
 forwardReg rd x (rs1, rs2) (y, z) =
   ( if rd == rs1 then x else y
   , if rd == rs2 then x else z)
 
---type RegFile = Vec 31 Value
 
 type RegReadAddr = RegAddr
 type RegWriteAddr = RegAddr
+
 
 regFile :: HiddenClockResetEnable dom
   => Signal dom (RegReadAddr, RegReadAddr)

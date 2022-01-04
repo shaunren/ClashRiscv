@@ -60,7 +60,6 @@ common common-options
   build-depends:
     base,
     Cabal,
-    bytestring >= 0.10 && < 0.12,
 
     -- clash-prelude will set suitable version bounds for the plugins
     clash-prelude >= 1.4 && < 1.6,
@@ -103,6 +102,15 @@ executable clashi
   if !os(Windows)
     ghc-options: -dynamic
   build-depends: base, clash-ghc, ClashRiscv
+
+executable createRom
+  main-is: bin/CreateROM.hs
+  default-language: Haskell2010
+  if !os(Windows)
+    ghc-options: -dynamic
+  build-depends:
+    base,
+    bytestring >= 0.10 && < 0.12
 
 test-suite doctests
   import:           common-options
