@@ -44,7 +44,7 @@ pipeline
 pipeline =
   let
     ---- Fetch
-    if_pc = mux mem_loadStall if_prevPcReg (liftA2 fromMaybe if_pcReg ex_maybeJAddr)
+    if_pc = mux mem_loadStall if_prevPcReg (liftA2 fromMaybe if_pcReg mem_maybeJAddr)
     if_pcReg = register 0 $ fmap (+4) if_pc
     if_prevPcReg = register 0 if_pcReg      -- if_pcReg delayed by 1 cycle
 
@@ -53,12 +53,17 @@ pipeline =
 
     ---- Decode
     -- In case of load stall, bring back the instruction from EX and bubble EX.
+    -- In case of jump stall, flush stage.
     id_pc' = register 0 if_pc
     id_pc = mux mem_loadStall ex_pc id_pc'
 
     -- TODO handle illegal ops
-    id_uopsAndRs = mux mem_loadStall id_prevUopsAndRsReg
-                   (maybe def decodeToUOps . decode <$> instrWord)
+    id_uopsAndRs = handleStall <$> mem_jumpStall <*> mem_loadStall <*> id_prevUopsAndRsReg <*> instrWord
+      where
+        handleStall jumpStall loadStall prevUopsAndRs curInstrWord
+          | jumpStall = def
+          | loadStall = prevUopsAndRs
+          | otherwise = maybe def decodeToUOps $ decode curInstrWord
     id_prevUopsAndRsReg = register def id_uopsAndRs
 
     (id_uops, id_rs', id_rd') = unbundle id_uopsAndRs
@@ -70,8 +75,10 @@ pipeline =
     ---- Execute
     ex_pc   = register 0 id_pc
     ex_rs   = register (0, 0) id_rs
-    ex_rd   = mux mem_stallEx (pure 0)   $ register 0 id_rd
-    ex_uops = mux mem_stallEx (pure def) $ register def id_uops
+
+    stallEx = mem_jumpStall .||. mem_loadStall
+    ex_rd   = mux stallEx (pure 0)   $ register 0 id_rd
+    ex_uops = mux stallEx (pure def) $ register def id_uops
 
     -- Forward registers from WB and MEM if necessary.
     ex_valsIn = forwardReg <$> memFwd <*> wbFwd <*> ex_rs <*> id_regsOut
@@ -79,7 +86,7 @@ pipeline =
         memFwd = bundle (mem_rd, ex_out)
         wbFwd  = bundle (wb_rd, wb_writeVal)
 
-    (ex_out', ex_maybeJAddr) = unbundle (runExOp <$> fmap exUOp ex_uops <*> fmap immValue ex_uops <*> ex_valsIn <*> ex_pc)
+    (ex_out', ex_maybeJAddr') = unbundle (runExOp <$> fmap exUOp ex_uops <*> fmap immValue ex_uops <*> ex_valsIn <*> ex_pc)
       where
         runExOp :: ExUOp -> Value -> (Value, Value) -> Value -> (Value, Maybe Value)
         runExOp ExU_Nop _ _ _               = (0, Nothing)
@@ -127,12 +134,13 @@ pipeline =
     -- Only access data RAM if the RAM address is not memory mapped.
     mem_dataRamOut = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
 
-    mem_jumpStall = register False $ isJust <$> ex_maybeJAddr
+    mem_maybeJAddr = register Nothing ex_maybeJAddr'
+
+    mem_jumpStall = isJust <$> mem_maybeJAddr
     mem_loadStall = liftA3 shouldLoadStall (memUOp <$> mem_uops) mem_rd ex_rs
       where
         shouldLoadStall (MemU_Load {}) rd (rs1, rs2) = rd == rs1 || rd == rs2
         shouldLoadStall _ _ _ = False
-    mem_stallEx = mem_jumpStall .||. mem_loadStall
 
     mem_writeVal' = mux (useRAMOut <$> mem_uops)
                    (liftA2 fromMaybe mem_dataRamOut mem_maybeMMIOOut)
