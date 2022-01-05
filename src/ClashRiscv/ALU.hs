@@ -58,7 +58,7 @@ alu op x1 x2 = case op of
   where
     s_x1  = bitCoerce x1 :: SignedValue
     s_x2  = bitCoerce x2 :: SignedValue
-    shamt = fromIntegral (truncateB x2 :: Unsigned 5)
+    shamt = fromIntegral $ slice d4 d0 x2
     --getHigherHalfS = unpack . slice d63 d32
 
 

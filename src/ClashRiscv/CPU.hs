@@ -123,6 +123,11 @@ pipeline =
           , writeVal = Nothing
           }
 
+    ex_loadStall' = liftA3 shouldLoadStall (memUOp <$> ex_uops) ex_rd id_rs
+      where
+        shouldLoadStall (MemU_Load {}) rd (rs1, rs2) = rd == rs1 || rd == rs2
+        shouldLoadStall _ _ _ = False
+
     ex_out = register 0 ex_out'
 
     ---- Memory
@@ -137,10 +142,7 @@ pipeline =
     mem_maybeJAddr = register Nothing ex_maybeJAddr'
 
     mem_jumpStall = isJust <$> mem_maybeJAddr
-    mem_loadStall = liftA3 shouldLoadStall (memUOp <$> mem_uops) mem_rd ex_rs
-      where
-        shouldLoadStall (MemU_Load {}) rd (rs1, rs2) = rd == rs1 || rd == rs2
-        shouldLoadStall _ _ _ = False
+    mem_loadStall = register False ex_loadStall'
 
     mem_writeVal' = mux (useRAMOut <$> mem_uops)
                    (liftA2 fromMaybe mem_dataRamOut mem_maybeMMIOOut)
