@@ -1,10 +1,8 @@
 module ClashRiscv.CPU where
 
 import Clash.Prelude
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, fromJust, isJust)
 import Control.Monad (guard)
-import Control.Arrow ((***))
-
 
 import Clash.Intel.ClockGen
 
@@ -66,25 +64,21 @@ pipeline =
           | otherwise = maybe def decodeToUOps $ decode curInstrWord
     id_prevUopsAndRsReg = register def id_uopsAndRs
 
-    (id_uops, id_rs', id_rd') = unbundle id_uopsAndRs
-    id_rs = fmap (bitCoerce *** bitCoerce) id_rs'
-    id_rd = fmap bitCoerce id_rd'
+    (id_uops, id_rs) = unbundle id_uopsAndRs
+    id_bypassFrom = liftA3 trackBypass id_rs ex_uops mem_uops
 
     id_regsOut = regFile id_rs wb_writeReg
 
     ---- Execute
     ex_pc   = register 0 id_pc
-    ex_rs   = register (0, 0) id_rs
 
     stallEx = mem_jumpStall .||. mem_loadStall
-    ex_rd   = mux stallEx (pure 0)   $ register 0 id_rd
     ex_uops = mux stallEx (pure def) $ register def id_uops
+    ex_bypassFrom = mux stallEx (pure (BypassNone, BypassNone)) $
+      register (BypassNone, BypassNone) id_bypassFrom
 
     -- Forward registers from WB and MEM if necessary.
-    ex_valsIn = forwardReg <$> memFwd <*> wbFwd <*> ex_rs <*> id_regsOut
-      where
-        memFwd = bundle (mem_rd, ex_out)
-        wbFwd  = bundle (wb_rd, wb_writeVal)
+    ex_valsIn = bypassReg <$> ex_bypassFrom <*> id_regsOut <*> ex_out <*> wb_writeVal
 
     (ex_out', ex_maybeJAddr') = unbundle (runExOp <$> fmap exUOp ex_uops <*> fmap immValue ex_uops <*> ex_valsIn <*> ex_pc)
       where
@@ -123,16 +117,16 @@ pipeline =
           , writeVal = Nothing
           }
 
-    ex_loadStall' = liftA3 shouldLoadStall (memUOp <$> ex_uops) ex_rd id_rs
+    ex_loadStall' = liftA3 shouldLoadStall (memUOp <$> ex_uops) (rdReg <$> ex_uops) id_rs
       where
-        shouldLoadStall (MemU_Load {}) rd (rs1, rs2) = rd == rs1 || rd == rs2
+        shouldLoadStall (MemU_Load {}) rd' (rs1, rs2) =
+          let rd = fromJust rd' in rd == rs1 || rd == rs2
         shouldLoadStall _ _ _ = False
 
     ex_out = register 0 ex_out'
 
     ---- Memory
     mem_uops = register def ex_uops
-    mem_rd   = register 0 ex_rd
 
     -- Handle memory-mapped I/O first.
     (mem_mmioVals, mem_maybeMMIOOut) = mmio ex_dataRamIn
@@ -153,38 +147,52 @@ pipeline =
     wb_writeVal = register 0 mem_writeVal'
 
     wb_uops = register def mem_uops
-    wb_rd   = register 0 mem_rd
     
-    wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) wb_rd wb_writeVal
+    wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) (rdReg <$> wb_uops) wb_writeVal
       where
         runWbOp WbU_Nop _ _   = Nothing
-        runWbOp _ rd val      = Just (rd, val)
-
+        runWbOp _ maybeRd val = maybeRd >>= \rd -> Just (rd, val)
   in
     mmioLEDs <$> mem_mmioVals
 
+data BypassFrom = BypassNone | BypassMem | BypassWb
+  deriving (Eq, Show, Generic, NFDataX)
 
-type RegReadAddr  = RegAddr
-type RegWriteAddr = RegAddr
-
-forwardReg
-  :: (RegWriteAddr, Value)
-  -> (RegWriteAddr, Value)
-  -> (RegReadAddr, RegReadAddr)
-  -> (Value, Value)
-  -> (Value, Value)
-{-# INLINE forwardReg #-}
-forwardReg (memrd, memx) (wbrd, wbx) (rs1, rs2) (x, y) = (x', y')
+trackBypass
+  :: (RegReadAddr, RegReadAddr)
+  -> UOps                        -- ^ EX stage UOps
+  -> UOps                        -- ^ MEM stage UOps
+  -> (BypassFrom, BypassFrom)
+{-# INLINE trackBypass #-}
+trackBypass (rs1, rs2) exUOps memUOps = (b1, b2)
   where
-    x' | rs1 == 0     = 0
-       | memrd == rs1 = memx
-       | wbrd == rs1  = wbx
-       | otherwise    = x
+    (b1', b2') = fromMaybe (BypassNone, BypassNone) $ do
+      rd <- rdReg memUOps
+      return ( if rd == rs1 then BypassWb else BypassNone
+             , if rd == rs2 then BypassWb else BypassNone
+             )
+    (b1, b2) = fromMaybe (b1', b2') $ do
+      guard $ readyAtMem exUOps
+      rd <- rdReg exUOps
+      return ( if rd == rs1 then BypassMem else b1'
+             , if rd == rs2 then BypassMem else b2'
+             )
 
-    y' | rs2 == 0     = 0
-       | memrd == rs2 = memx
-       | wbrd == rs2  = wbx
-       | otherwise    = y
+  
+bypassReg
+  :: (BypassFrom, BypassFrom)
+  -> (Value, Value)
+  -> Value                     -- ^ Data from MEM
+  -> Value                     -- ^ Data from WB
+  -> (Value, Value)
+{-# INLINE bypassReg #-}
+bypassReg (b1, b2) (x1, x2) memx wbx =
+  (selectVal b1 x1 memx wbx, selectVal b2 x2 memx wbx)
+  where
+    selectVal b x mx wx = case b of
+      BypassNone -> x
+      BypassMem  -> mx
+      BypassWb   -> wx
 
 
 regFile :: HiddenClockResetEnable dom

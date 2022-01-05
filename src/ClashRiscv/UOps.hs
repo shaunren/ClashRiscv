@@ -38,34 +38,34 @@ data WbUOp
   deriving (Show, Eq, Generic, NFDataX)
 
 data UOps = UOps
-    { immValue :: Value
-    , exUOp    :: ExUOp
-    , memUOp   :: MemUOp
-    , wbUOp    :: WbUOp
+    { rdReg      :: Maybe RegAddr
+    , immValue   :: Value
+    , readyAtMem :: Bool  -- ^ Data will be ready at the beginning of MEM
+    , exUOp      :: ExUOp
+    , memUOp     :: MemUOp
+    , wbUOp      :: WbUOp
     }
     deriving (Show, Eq, Generic, NFDataX)
 
 instance Default UOps where
-    def = UOps 0 ExU_Nop MemU_Nop WbU_Nop
+    def = UOps Nothing 0 True ExU_Nop MemU_Nop WbU_Nop
 
 
 -- | Decodes an instruction into UOps.
-decodeToUOps :: Instruction -> (UOps, (Register, Register), DstReg)
-decodeToUOps Nop = (def, (0, 0), 0)
+decodeToUOps :: Instruction -> (UOps, (RegAddr, RegAddr))
+decodeToUOps Nop = (def, (0, 0))
 decodeToUOps (Branch op rs1 rs2 imm) =
     ( def { immValue = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
           , exUOp    = ExU_Branch op
           }
-    , (rs1, rs2)
-    , 0
+    , (bitCoerce rs1, bitCoerce rs2)
     )
 decodeToUOps (Store op rs1 rs2 imm) =
     ( def { immValue = bitCoerce (signExtend imm), memUOp = MemU_Store op }
-    , (rs1, rs2)
-    , 0
+    , (bitCoerce rs1, bitCoerce rs2)
     )
-decodeToUOps (WithDstReg 0 instr) | not (isJump instr) = (def, (0, 0), 0)
-decodeToUOps (WithDstReg rd instr)                     = (uops, rs, rd)
+decodeToUOps (WithDstReg 0 instr) | not (isJump instr) = (def, (0, 0))
+decodeToUOps (WithDstReg rd instr) = (uops { rdReg = Just $ bitCoerce rd }, rs)
   where
     (uops, rs) = case instr of
         (Lui imm) ->
@@ -98,22 +98,25 @@ decodeToUOps (WithDstReg rd instr)                     = (uops, rs, rd)
                   , exUOp    = ExU_Jalr
                   , wbUOp    = WbU_WriteResult
                   }
-            , (rs1, 0)
+            , (bitCoerce rs1, 0)
             )
         (Load op rs1 imm) ->
-            ( def { immValue = bitCoerce (signExtend imm)
-                  , memUOp   = MemU_Load op
-                  , wbUOp    = WbU_WriteRAMOut
+            ( def { immValue   = bitCoerce (signExtend imm)
+                  , readyAtMem = False
+                  , memUOp     = MemU_Load op
+                  , wbUOp      = WbU_WriteRAMOut
                   }
-            , (rs1, 0)
+            , (bitCoerce rs1, 0)
             )
         (AluImm op rs1 imm) ->
             ( def { immValue = bitCoerce (signExtend imm)
                   , exUOp    = ExU_AluImm op
                   , wbUOp    = WbU_WriteResult
                   }
-            , (rs1, 0)
+            , (bitCoerce rs1, 0)
             )
         (AluReg op rs1 rs2) ->
-            (def { exUOp = ExU_AluReg op, wbUOp = WbU_WriteResult }, (rs1, rs2))
-decodeToUOps _ = (def, (0, 0), 0)
+            ( def { exUOp = ExU_AluReg op, wbUOp = WbU_WriteResult }
+            , (bitCoerce rs1, bitCoerce rs2)
+            )
+decodeToUOps _ = (def, (0, 0))
