@@ -1,0 +1,98 @@
+# -------------------------------------------------------------------------- #
+#
+# Copyright (C) 2021  Intel Corporation. All rights reserved.
+# Your use of Intel Corporation's design tools, logic functions 
+# and other software and tools, and any partner logic 
+# functions, and any output files from any of the foregoing 
+# (including device programming or simulation files), and any 
+# associated documentation or information are expressly subject 
+# to the terms and conditions of the Intel Program License 
+# Subscription Agreement, the Intel Quartus Prime License Agreement,
+# the Intel FPGA IP License Agreement, or other applicable license
+# agreement, including, without limitation, that your use is for
+# the sole purpose of programming logic devices manufactured by
+# Intel and sold by Intel or its authorized distributors.  Please
+# refer to the applicable agreement for further details, at
+# https://fpgasoftware.intel.com/eula.
+#
+# -------------------------------------------------------------------------- #
+#
+# Quartus Prime
+# Version 21.1.0 Build 842 10/21/2021 SJ Lite Edition
+# Date created = 00:10:46  January 04, 2022
+#
+# -------------------------------------------------------------------------- #
+#
+# Notes:
+#
+# 1) The default values for assignments are stored in the file:
+#		cpu_assignment_defaults.qdf
+#    If this file doesn't exist, see file:
+#		assignment_defaults.qdf
+#
+# 2) Intel recommends that you do not modify this file. This
+#    file is updated automatically by the Quartus Prime software
+#    and any changes you make may be lost or overwritten.
+#
+# -------------------------------------------------------------------------- #
+
+
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY cpu
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 21.1.0
+set_global_assignment -name PROJECT_CREATION_TIME_DATE "00:10:46  JANUARY 04, 2022"
+set_global_assignment -name LAST_QUARTUS_VERSION "21.1.0 Lite Edition"
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
+set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 256
+set_location_assignment PIN_V11 -to CLOCK_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
+set_location_assignment PIN_W15 -to LED[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[0]
+set_location_assignment PIN_AA24 -to LED[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[1]
+set_location_assignment PIN_V16 -to LED[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[2]
+set_location_assignment PIN_V15 -to LED[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[3]
+set_location_assignment PIN_AF26 -to LED[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[4]
+set_location_assignment PIN_AE26 -to LED[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[5]
+set_location_assignment PIN_Y16 -to LED[6]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[6]
+set_location_assignment PIN_AA23 -to LED[7]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[7]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED
+set_location_assignment PIN_AH17 -to RST
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to RST
+set_instance_assignment -name SLEW_RATE 1 -to LED[7]
+set_instance_assignment -name SLEW_RATE 1 -to LED[6]
+set_instance_assignment -name SLEW_RATE 1 -to LED[5]
+set_instance_assignment -name SLEW_RATE 1 -to LED[4]
+set_instance_assignment -name SLEW_RATE 1 -to LED[2]
+set_instance_assignment -name SLEW_RATE 1 -to LED[3]
+set_instance_assignment -name SLEW_RATE 1 -to LED[1]
+set_instance_assignment -name SLEW_RATE 1 -to LED[0]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to CLOCK_50
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[7]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[6]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[5]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[4]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[3]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[2]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[1]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to LED[0]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 16MA -to RST
+
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+set_global_assignment -name SYSTEMVERILOG_FILE cpu_types.sv
+set_global_assignment -name SYSTEMVERILOG_FILE cpu_resetSynchronizer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE cpu.sv
+set_global_assignment -name QSYS_FILE altera_pll90A7A332F45B202E.qsys
+set_global_assignment -name SDC_FILE cpu.sdc
+set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

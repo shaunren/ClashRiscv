@@ -1,38 +1,43 @@
 module ClashRiscv.MMIO where
 
 import           Clash.Prelude
-import Control.Monad (guard)
-import Data.Maybe (fromMaybe)
 import           ClashRiscv.DataRAM             ( DataRAMIn(..)
-                                                , calcWriteVal
                                                 , calcReadVal
+                                                , calcWriteVal
                                                 )
-import ClashRiscv.Types (Value)
+import           ClashRiscv.Types               ( Value )
+import           Control.Monad                  ( guard )
+import           Data.Maybe                     ( fromMaybe )
 
-data MMIOData = MMIOData
-    { mmioLEDs :: BitVector 8
-    }
-    deriving (Show, Default, Generic, NFDataX)
 
-handleMMIO
-    :: HiddenClockResetEnable dom
-    => Signal dom DataRAMIn
-    -> (Signal dom MMIOData, Signal dom (Maybe Value))
-handleMMIO dataRamIn = (mmioVals, out) -- mmioVals has a 1 cycle delay; out has no delay.
+data MMIOData = MMIOData { mmioLEDs :: BitVector 8 }
+  deriving (Show, Default, Generic, NFDataX)
+
+
+mmio
+  :: HiddenClockResetEnable dom
+  => Signal dom DataRAMIn
+  -> (Signal dom MMIOData, Signal dom (Maybe Value))
+mmio dataRamIn = (mmioVals, out) -- mmioVals has a 1 cycle delay; out has no delay.
   where
-    isMMIO = fmap addr dataRamIn .==. 0x40000000
+    isMMIO   = fmap addr dataRamIn .==. 0x40000000
 
     mmioVals = register def $ liftA3 updateVals dataRamIn isMMIO mmioVals
-    
-    updateVals ramIn is_mmio vals = fromMaybe vals $ do
-      guard is_mmio
-      wr <- calcWriteVal ramIn
-      return $ vals { mmioLEDs = truncateB (bitCoerce wr) }
 
-    out = liftA2 orNothing isMMIO
-          (calcReadVal <$> dataRamIn <*> fmap (bitCoerce . zeroExtend . mmioLEDs) mmioVals)
+    updateVals ramIn is_mmio vals = fromMaybe vals $ do
+        guard is_mmio
+        wr <- calcWriteVal ramIn
+        return $ vals { mmioLEDs = truncateB (bitCoerce wr) }
+
+    out = liftA2
+        orNothing
+        isMMIO
+        (   calcReadVal
+        <$> dataRamIn
+        <*> fmap (bitCoerce . zeroExtend . mmioLEDs) mmioVals
+        )
 
 -- | Produce a 'Just' when predicate is True, else Nothing.
 orNothing :: Bool -> a -> Maybe a
-orNothing True a  = Just a
+orNothing True  a = Just a
 orNothing False _ = Nothing

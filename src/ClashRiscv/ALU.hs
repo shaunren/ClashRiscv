@@ -40,22 +40,27 @@ alu op x1 x2 = case op of
   Sra    -> bitCoerce $ s_x1 `shiftR` shamt
   Or     -> x1 .|. x2
   And    -> x1 .&. x2
-  Mul    -> x1 * x2
-  Mulh   -> getHigherHalfS $ s_x1 `mul` s_x2
-  Mulhsu -> getHigherHalfS (signExtend s_x1 * bitCoerce (zeroExtend x2) :: Signed 64)
-  Mulhu  -> unpack $ slice d63 d32 $ x1 `mul` x2
 
+  -- TODO implement multiply ops
+  --Mul    -> x1 * x2
+  --Mulh   -> getHigherHalfS $ s_x1 `mul` s_x2
+  --Mulhsu -> getHigherHalfS (signExtend s_x1 * bitCoerce (zeroExtend x2) :: Signed 64)
+  --Mulhu  -> unpack $ slice d63 d32 $ x1 `mul` x2
+
+  -- TODO implement division ops
   -- TODO handle divide by zero
-  Div -> bitCoerce $ s_x1 `div` s_x2
-  Divu -> x1 `div` x2
-  Rem -> bitCoerce $ s_x1 `mod` s_x2
-  Remu -> x1 `mod` x2
+  --Div -> bitCoerce $ s_x1 `div` s_x2
+  --Divu -> x1 `div` x2
+  --Rem -> bitCoerce $ s_x1 `mod` s_x2
+  --Remu -> x1 `mod` x2
+  _ -> 0
 
   where
     s_x1  = bitCoerce x1 :: SignedValue
     s_x2  = bitCoerce x2 :: SignedValue
     shamt = fromIntegral (truncateB x2 :: Unsigned 5)
-    getHigherHalfS = unpack . slice d63 d32
+    --getHigherHalfS = unpack . slice d63 d32
+
 
 aluCompare :: BranchOp -> Value -> Value -> Bool
 aluCompare B_EQ x y = x == y

@@ -78,10 +78,11 @@ library
   import: common-options
   hs-source-dirs: src
   exposed-modules:
-    ClashRiscv.ALU
     ClashRiscv.CPU
-    ClashRiscv.Instructions
     ClashRiscv.Types
+    ClashRiscv.Instructions
+    ClashRiscv.UOps
+    ClashRiscv.ALU
     ClashRiscv.ROM
     ClashRiscv.DataRAM
     ClashRiscv.MMIO

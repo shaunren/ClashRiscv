@@ -1,7 +1,7 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module ClashRiscv.DataRAM where
 
 import Clash.Prelude
-import Data.Maybe (isJust)
 import ClashRiscv.Types ( Value, Addr )
 
 data DataRAMWordType = DR_B | DR_H | DR_W | DR_BU | DR_HU deriving (Eq, Show, Generic, NFDataX)
@@ -19,40 +19,49 @@ dataRAM
   -> Signal dom DataRAMOut
 dataRAM dataRamIn = calcReadVal <$> oldRamIn <*> ramOut
   where
-    ram = blockRamPow2 (replicate d1024 0)
+    ram = blockRamPow2 $ replicate d1024 0
 
-    a = truncateB . (`shiftR` 2) . addr <$> dataRamIn
+    wa = truncateB . (`shiftR` 2) . addr <$> dataRamIn
     wr' = calcWriteVal <$> dataRamIn
-    wr = liftA2 (,) . Just <$> a <*> wr'
+    wr = liftA2 (,) . Just <$> wa <*> wr'
 
-    ramOut = readNew ram a wr
+    ramOut = readNew ram wa wr
     oldRamIn = register def dataRamIn
 
-    
-
-wordLength :: DataRAMIn -> Int
-wordLength ramIn = case wordType ramIn of
-      DR_B  -> 1
-      DR_H  -> 2
-      DR_W  -> 4
-      DR_BU -> 1
-      DR_HU -> 2
 
 calcWriteVal :: DataRAMIn -> Maybe Value
+{-# INLINE calcWriteVal #-}
 calcWriteVal ramIn = do
   w <- writeVal ramIn
-  let mask = (1 `shiftL` (8 * wordLength ramIn)) - 1
-  return $ (w .&. mask) `shiftL` (8 * fromIntegral (3 .&. addr ramIn))
+  return $ shiftWord (truncateWord w)
+
+  where
+    truncateWord w = case wordType ramIn of
+      DR_W  -> w
+      DR_B  -> zeroExtend (truncateB w :: Unsigned 8)
+      DR_H  -> zeroExtend (truncateB w :: Unsigned 16)
+      DR_BU -> zeroExtend (truncateB w :: Unsigned 8)
+      DR_HU -> zeroExtend (truncateB w :: Unsigned 16)
+
+    shiftWord w = case (truncateB (addr ramIn) :: Unsigned 2) of
+      0 -> w
+      1 -> w `shiftL` 8
+      2 -> w `shiftL` 16
+      3 -> w `shiftL` 24
+
 
 calcReadVal :: DataRAMIn -> DataRAMOut -> DataRAMOut
-calcReadVal oldIn out
-      | isJust (writeVal oldIn) = 0
-      | otherwise = case wordType oldIn of
-          DR_W -> out
-          DR_B -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 8) :: Signed 8) :: Signed 32)
-          DR_H -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 16) :: Signed 16) :: Signed 32)
-          DR_BU -> zeroExtend (truncateB rawVal :: Unsigned 8)
-          DR_HU -> zeroExtend (truncateB rawVal :: Unsigned 16)
-      where
-        -- Value before extension
-        rawVal = out `shiftR` (8 * fromIntegral (3 .&. addr oldIn))
+{-# INLINE calcReadVal #-}
+calcReadVal oldIn ramOut = case wordType oldIn of
+  DR_W -> ramOut
+  DR_B -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 8) :: Signed 8) :: Signed 32)
+  DR_H -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 16) :: Signed 16) :: Signed 32)
+  DR_BU -> zeroExtend (truncateB rawVal :: Unsigned 8)
+  DR_HU -> zeroExtend (truncateB rawVal :: Unsigned 16)
+  where
+    -- Value before extension
+    rawVal = case (truncateB (addr oldIn) :: Unsigned 2) of
+      0 -> ramOut
+      1 -> ramOut `shiftR` 8
+      2 -> ramOut `shiftR` 16
+      3 -> ramOut `shiftR` 24

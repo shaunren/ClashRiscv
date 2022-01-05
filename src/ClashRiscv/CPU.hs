@@ -1,8 +1,11 @@
 module ClashRiscv.CPU where
 
+import Clash.Prelude
 import Data.Maybe (fromMaybe, isJust)
 import Control.Monad (guard)
-import Clash.Prelude
+import Control.Arrow ((***))
+
+
 import Clash.Intel.ClockGen
 
 import ClashRiscv.Types
@@ -10,6 +13,7 @@ import ClashRiscv.Instructions
 import ClashRiscv.ALU ( alu, aluCompare )
 import ClashRiscv.ROM
 import ClashRiscv.DataRAM
+import ClashRiscv.UOps
 import ClashRiscv.MMIO
 
 
@@ -20,32 +24,31 @@ createDomain vSystem{vName="Dom150", vPeriod=6667}    -- 150 MHz
 {-# ANN topEntity
   (Synthesize
     { t_name   = "cpu"
-    , t_inputs = [PortName "CLOCK_50"]
+    , t_inputs = [PortName "CLOCK_50", PortName "RST"]
     , t_output = PortName "LED"
     }) #-}
-topEntity ::
-  Clock DomInput
+topEntity
+  :: Clock DomInput              -- ^ 50 MHz clock signal
   -> Signal DomInput Bool        -- ^ Reset signal
-  -> Signal Dom150 (BitVector 8) -- ^ LED outputs
+  -> Signal Dom150 (BitVector 8) -- ^ Output LED signals
 topEntity clk rst = exposeClockResetEnable pipeline pllOut rstSync enableGen
   where
-    (pllOut, pllStable) = altpll @Dom150 (SSymbol @"altpll150") clk (unsafeFromLowPolarity rst)
-    rstSync             = resetSynchronizer pllOut (unsafeFromLowPolarity pllStable) enableGen
+    -- FIXME The generated SystemVerilog has one less out clock port than expected.
+    (pllOut, pllLocked) = alteraPll (SSymbol @"alteraPLL150") clk (unsafeFromLowPolarity rst)
+    rstSync = resetSynchronizer pllOut (unsafeFromLowPolarity pllLocked) enableGen
 
 
 pipeline
   :: HiddenClockResetEnable dom
-  => Signal dom (BitVector 8) -- ^ LED signals
+  => Signal dom (BitVector 8)    -- ^ LED signals
 pipeline =
   let
     ---- Fetch
-    if_pc = liftA2 fromMaybe (liftA2 curPc if_pcReg mem_loadStall) ex_maybeJAddr
-      where curPc pc loadStall
-              | loadStall = pc - 4
-              | otherwise = pc
+    if_pc = mux mem_loadStall if_prevPcReg (liftA2 fromMaybe if_pcReg ex_maybeJAddr)
     if_pcReg = register 0 $ fmap (+4) if_pc
+    if_prevPcReg = register 0 if_pcReg      -- if_pcReg delayed by 1 cycle
 
-
+    -- ROM: 1 cycle delay
     instrWord = instrRom "rom/rom.bin" $ fmap (truncateB . (`shiftR` 2)) if_pc
 
     ---- Decode
@@ -54,81 +57,56 @@ pipeline =
     id_pc = mux mem_loadStall ex_pc id_pc'
 
     -- TODO handle illegal ops
-    maybe_instr = decode <$> instrWord
-    instr = mux mem_loadStall id_instrOut (handleNop <$> maybe_instr)
-    handleNop Nothing = Nop
-    handleNop (Just inst)
-      | isNop inst = Nop
-      | otherwise  = inst
-    instr_readRegs = extractReadRegs <$> instr
+    id_uopsAndRs = mux mem_loadStall id_prevUopsAndRsReg
+                   (maybe def decodeToUOps . decode <$> instrWord)
+    id_prevUopsAndRsReg = register def id_uopsAndRs
 
-    id_regsOut = regFile instr_readRegs wb_writeReg
-    id_instrOut = register Nop instr
+    (id_uops, id_rs', id_rd') = unbundle id_uopsAndRs
+    id_rs = fmap (bitCoerce *** bitCoerce) id_rs'
+    id_rd = fmap bitCoerce id_rd'
+
+    id_regsOut = regFile id_rs wb_writeReg
 
     ---- Execute
-    ex_pc = register 0 id_pc
-    ex_sourceRegs = register (0, 0) instr_readRegs
-
-    ex_instr = mux (mem_jumpStall .||. mem_loadStall) (pure Nop) id_instrOut
+    ex_pc   = register 0 id_pc
+    ex_rs   = register (0, 0) id_rs
+    ex_rd   = mux mem_stallEx (pure 0)   $ register 0 id_rd
+    ex_uops = mux mem_stallEx (pure def) $ register def id_uops
 
     -- Forward registers from WB and MEM if necessary.
-    ex_wbFwd = wbForwardReg <$> wb_writeReg <*> ex_sourceRegs <*> id_regsOut
+    ex_valsIn = forwardReg <$> memFwd <*> wbFwd <*> ex_rs <*> id_regsOut
       where
-        wbForwardReg wr rs ido = fromMaybe ido $ do
-          (rd, x) <- wr
-          return $ forwardReg rd x rs ido
+        memFwd = bundle (mem_rd, ex_out)
+        wbFwd  = bundle (wb_rd, wb_writeVal)
 
-    ex_valsIn = mux (mem_jumpStall .||. mem_loadStall)
-                ex_wbFwd
-                (forwardReg <$> (bitCoerce . getDstReg <$> mem_instr) <*> ex_out <*> ex_sourceRegs <*> ex_wbFwd)
-
-    (ex_out', ex_maybeJAddr) = unbundle $ liftA3 runExOp ex_instr ex_valsIn ex_pc
+    (ex_out', ex_maybeJAddr) = unbundle (runExOp <$> fmap exUOp ex_uops <*> fmap immValue ex_uops <*> ex_valsIn <*> ex_pc)
       where
-        runExOp :: Instruction -> (Value, Value) -> Value -> (Value, Maybe Value)
-        runExOp Nop _ _ = (0, Nothing)
-        runExOp (Branch op _ _ imm) (x,y) pc
-          | aluCompare op x y = (pc + 4, Just $ pc + offset)
-          | otherwise         = (0, Nothing)
-          where offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
-        runExOp (Store _ _ _ imm) (x,_) _ = (x + bitCoerce (signExtend imm), Nothing)
-        runExOp (WithDstReg _ ins) (x,y) pc = case ins of
-          (Lui imm)         -> (unpack $ pack imm ++# 0, Nothing)
-          (Auipc imm)       -> (pc + unpack (pack imm ++# 0), Nothing)
-          (Jal imm)         -> (pc + 4, Just $ pc + (unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)))
-          (Jalr _ imm)      -> (pc + 4, Just $ x + bitCoerce (signExtend imm))
-          (Load _ _ imm)    -> (x + bitCoerce (signExtend imm), Nothing)
-          (AluImm op _ imm) -> (alu op x (bitCoerce $ signExtend imm), Nothing)
-          (AluReg op _ _)   -> (alu op x y, Nothing)
-        runExOp _ _ _ = (0, Nothing) -- TODO: Fence ECall Ebreak
+        runExOp :: ExUOp -> Value -> (Value, Value) -> Value -> (Value, Maybe Value)
+        runExOp ExU_Nop _ _ _               = (0, Nothing)
+        runExOp (ExU_Branch op) imm (x,y) pc
+          | aluCompare op x y               = (0, Just $ pc + imm)
+          | otherwise                       = (0, Nothing)
+        runExOp ExU_Lui imm _ _             = (imm, Nothing)
+        runExOp ExU_Auipc imm _ pc          = (pc + imm, Nothing)
+        runExOp ExU_Jal imm _ pc            = (pc + 4, Just $ pc + imm)
+        runExOp ExU_Jalr imm (x,_) pc       = (pc + 4, Just $ x + imm)
+        runExOp (ExU_AluImm op) imm (x,_) _ = (alu op x imm, Nothing)
+        runExOp (ExU_AluReg op) _   (x,y) _ = (alu op x y, Nothing)
 
-    ex_out = register 0 ex_out'
-
-    ---- Memory
-    -- mem_pc = register 0 ex_pc
-    mem_instr = register Nop ex_instr
-    mem_valsIn = register (0, 0) ex_valsIn
-
-    mem_jumpStall = register False $ isJust <$> ex_maybeJAddr
-    mem_loadStall = liftA2 shouldLoadStall mem_instr ex_sourceRegs
-      where
-        shouldLoadStall (WithDstReg rd' (Load {})) (rs1, rs2) =
-          let rd = bitCoerce rd'
-          in  rd /= 0 && (rd == rs1 || rd == rs2)
-        shouldLoadStall _ _ = False
-
-    mem_dataRamIn = runMemOp <$> mem_instr <*> ex_out <*> mem_valsIn
+    ex_dataRamIn = liftA3 runMemOp (memUOp <$> ex_uops) (immValue <$> ex_uops) ex_valsIn
       where
         -- TODO check for misaligned access
-        runMemOp (Store op _ _ _) addr (_, y) = DataRAMIn {
-            addr = addr
+        runMemOp MemU_Nop _ _ = def
+        runMemOp (MemU_Store op) imm (x,y) = DataRAMIn {
+            addr = x + imm
           , wordType = case op of
               S_B -> DR_B
               S_H -> DR_H
               S_W -> DR_W
           , writeVal = Just y
           }
-        runMemOp (WithDstReg _ (Load op _ _)) addr _ = DataRAMIn {
-            addr = addr
+        runMemOp (MemU_Load op) imm (x,_)  = DataRAMIn {
+            addr = x + imm
           , wordType = case op of
               L_B  -> DR_B
               L_H  -> DR_H
@@ -137,52 +115,66 @@ pipeline =
               LU_H -> DR_HU
           , writeVal = Nothing
           }
-        runMemOp _ _ _ = def
 
-    mem_out = register 0 ex_out
+    ex_out = register 0 ex_out'
+
+    ---- Memory
+    mem_uops = register def ex_uops
+    mem_rd   = register 0 ex_rd
+
+    -- Handle memory-mapped I/O first.
+    (mem_mmioVals, mem_maybeMMIOOut) = mmio ex_dataRamIn
+    -- Only access data RAM if the RAM address is not memory mapped.
+    mem_dataRamOut = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
+
+    mem_jumpStall = register False $ isJust <$> ex_maybeJAddr
+    mem_loadStall = liftA3 shouldLoadStall (memUOp <$> mem_uops) mem_rd ex_rs
+      where
+        shouldLoadStall (MemU_Load {}) rd (rs1, rs2) = rd == rs1 || rd == rs2
+        shouldLoadStall _ _ _ = False
+    mem_stallEx = mem_jumpStall .||. mem_loadStall
+
+    mem_writeVal' = mux (useRAMOut <$> mem_uops)
+                   (liftA2 fromMaybe mem_dataRamOut mem_maybeMMIOOut)
+                   ex_out
+      where useRAMOut = (WbU_WriteRAMOut ==) . wbUOp
 
     ---- Writeback
+    wb_writeVal = register 0 mem_writeVal'
 
-    (wb_mmioVals, wb_maybeMMIOOut) = handleMMIO mem_dataRamIn
-    -- Only access data RAM if the RAM access is not MMIO.
-    wb_dataRamOut = dataRAM $ mux (isJust <$> wb_maybeMMIOOut) (pure def) mem_dataRamIn
-
-    wb_ramVal = liftA2 fromMaybe wb_dataRamOut wb_maybeMMIOOut
-
-    wb_instr = register Nop mem_instr
-    wb_writeReg = runWbOp <$> wb_instr <*> mem_out <*> wb_ramVal
+    wb_uops = register def mem_uops
+    wb_rd   = register 0 mem_rd
+    
+    wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) wb_rd wb_writeVal
       where
-        runWbOp :: Instruction -> Value -> DataRAMOut -> Maybe (RegAddr, Value)
-        runWbOp (WithDstReg rd (Load {})) _ val = Just (bitCoerce rd, val)
-        runWbOp (WithDstReg rd _)         val _ = Just (bitCoerce rd, val)
-        runWbOp _ _ _ = Nothing
+        runWbOp WbU_Nop _ _   = Nothing
+        runWbOp _ rd val      = Just (rd, val)
 
   in
-    mmioLEDs <$> wb_mmioVals
+    mmioLEDs <$> mem_mmioVals
 
 
--- |Extract register indicies to be read from an instruction.
-extractReadRegs :: Instruction -> (RegAddr, RegAddr)
-extractReadRegs (Branch _ rs1 rs2 _) = (bitCoerce rs1, bitCoerce rs2)
-extractReadRegs (Store _ rs1 rs2 _)  = (bitCoerce rs1, bitCoerce rs2)
-extractReadRegs (WithDstReg _ instr) = case instr of
-  (Jalr rs _)        -> (bitCoerce rs, 0)
-  (Load _ rs _)      -> (bitCoerce rs, 0)
-  (AluImm _ rs _)    -> (bitCoerce rs, 0)
-  (AluReg _ rs1 rs2) -> (bitCoerce rs1, bitCoerce rs2)
-  _                  -> (0, 0)
-extractReadRegs _ = (0, 0)
-
-
-forwardReg :: RegAddr -> Value -> (RegAddr, RegAddr) -> (Value, Value) -> (Value, Value)
-forwardReg 0 _ _ xs = xs
-forwardReg rd x (rs1, rs2) (y, z) =
-  ( if rd == rs1 then x else y
-  , if rd == rs2 then x else z)
-
-
-type RegReadAddr = RegAddr
+type RegReadAddr  = RegAddr
 type RegWriteAddr = RegAddr
+
+forwardReg
+  :: (RegWriteAddr, Value)
+  -> (RegWriteAddr, Value)
+  -> (RegReadAddr, RegReadAddr)
+  -> (Value, Value)
+  -> (Value, Value)
+{-# INLINE forwardReg #-}
+forwardReg (memrd, memx) (wbrd, wbx) (rs1, rs2) (x, y) = (x', y')
+  where
+    x' | rs1 == 0     = 0
+       | memrd == rs1 = memx
+       | wbrd == rs1  = wbx
+       | otherwise    = x
+
+    y' | rs2 == 0     = 0
+       | memrd == rs2 = memx
+       | wbrd == rs2  = wbx
+       | otherwise    = y
 
 
 regFile :: HiddenClockResetEnable dom
@@ -192,12 +184,7 @@ regFile :: HiddenClockResetEnable dom
 regFile rs wr =
   let
     (rs1, rs2) = unbundle rs
-    sinkR0 w = do
-      (ix, v) <- w
-      guard (ix /= 0)
-      return (ix, v)
-    wr' = sinkR0 <$> wr
-    out1 = readNew (blockRamPow2 (replicate d32 0)) rs1 wr'
-    out2 = readNew (blockRamPow2 (replicate d32 0)) rs2 wr'
+    out1 = readNew (blockRamPow2 (replicate d32 0)) rs1 wr
+    out2 = readNew (blockRamPow2 (replicate d32 0)) rs2 wr
   in
     bundle (out1, out2)

@@ -1,9 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 module ClashRiscv.Instructions where
 
-import Data.List ((!!))
-
-import Clash.Prelude hiding ((!!))
+import Clash.Prelude
 
 import ClashRiscv.Types
 import ClashRiscv.ALU
@@ -112,7 +110,9 @@ decode word = case opcode of
 
 
 decodeAluOp :: Bool -> BitVector 3 -> BitVector 7 -> Maybe ALUOp
-decodeAluOp False funct3 1 = Just $ [Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu] !! fromIntegral funct3
+decodeAluOp False funct3 1
+  | funct3 < 4 = Just $ (Mul :> Mulh :> Mulhsu :> Mulhu :> Div :> Divu :> Rem :> Remu :> Nil) !! funct3
+  | otherwise  = Nothing -- TODO implement division ops
 decodeAluOp isImm funct3 funct7 = case funct3 of
   0b000
     | isImm || funct7 == 0 -> Just Add
@@ -142,3 +142,8 @@ isNop (WithDstReg 0 (Jalr _ _)) = False
 isNop (WithDstReg 0 _) = True
 isNop Fence            = True
 isNop _                = False
+
+isJump :: InstructionWithDstReg -> Bool
+isJump (Jal {})  = True
+isJump (Jalr {}) = True
+isJump _         = False
