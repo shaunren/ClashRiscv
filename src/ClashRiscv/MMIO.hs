@@ -17,8 +17,8 @@ data MMIOData = MMIOData { mmioLEDs :: BitVector 8 }
 mmio
   :: HiddenClockResetEnable dom
   => Signal dom DataRAMIn
-  -> (Signal dom MMIOData, Signal dom (Maybe Value))
-mmio dataRamIn = (mmioVals, out) -- mmioVals has a 1 cycle delay; out has no delay.
+  -> (Signal dom MMIOData, Signal dom (Maybe Value)) -- ^ Delayed by 1 cycle.
+mmio dataRamIn = (mmioVals, out)
   where
     isMMIO   = fmap addr dataRamIn .==. 0x40000000
 
@@ -29,7 +29,7 @@ mmio dataRamIn = (mmioVals, out) -- mmioVals has a 1 cycle delay; out has no del
         wr <- calcWriteVal ramIn
         return $ vals { mmioLEDs = truncateB (bitCoerce wr) }
 
-    out = liftA2
+    out = register Nothing $ liftA2
         orNothing
         isMMIO
         (   calcReadVal

@@ -32,6 +32,7 @@ dataRAM dataRamIn = calcReadVal <$> oldRamIn <*> ramOut
 calcWriteVal :: DataRAMIn -> Maybe Value
 {-# INLINE calcWriteVal #-}
 calcWriteVal ramIn = do
+  -- FIXME w needs to be combined with the preexisting ram value if not DR_W
   w <- writeVal ramIn
   return $ shiftWord (truncateWord w)
 

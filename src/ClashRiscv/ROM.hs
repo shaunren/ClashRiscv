@@ -1,10 +1,6 @@
 module ClashRiscv.ROM (RomAddr, instrRom) where
 
-import           Data.Maybe                     ( fromMaybe )
-
-import           Prelude                        ((++), replicate, length)
-import           Clash.Prelude                  hiding ((++), replicate, length)
-import qualified Clash.Sized.Vector             as V
+import           Clash.Prelude
 import           ClashRiscv.Types               ( Value )
 
 

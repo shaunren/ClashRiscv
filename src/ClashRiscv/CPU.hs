@@ -74,8 +74,7 @@ pipeline =
 
     stallEx = mem_jumpStall .||. mem_loadStall
     ex_uops = mux stallEx (pure def) $ register def id_uops
-    ex_bypassFrom = mux stallEx (pure (BypassNone, BypassNone)) $
-      register (BypassNone, BypassNone) id_bypassFrom
+    ex_bypassFrom = register (BypassNone, BypassNone) id_bypassFrom
 
     -- Forward registers from WB and MEM if necessary.
     ex_valsIn = bypassReg <$> ex_bypassFrom <*> id_regsOut <*> ex_out <*> wb_writeVal
