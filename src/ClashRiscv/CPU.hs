@@ -72,14 +72,13 @@ pipeline =
     ---- Execute
     ex_pc   = register 0 id_pc
 
-    stallEx = mem_jumpStall .||. mem_loadStall
-    ex_uops = mux stallEx (pure def) $ register def id_uops
+    ex_uops' = register def id_uops
     ex_bypassFrom = register (BypassNone, BypassNone) id_bypassFrom
 
     -- Forward registers from WB and MEM if necessary.
     ex_valsIn = bypassReg <$> ex_bypassFrom <*> id_regsOut <*> ex_out <*> wb_writeVal
 
-    (ex_out', ex_maybeJAddr') = unbundle (runExOp <$> fmap exUOp ex_uops <*> fmap immValue ex_uops <*> ex_valsIn <*> ex_pc)
+    (ex_out', ex_maybeJAddr') = unbundle (runExOp <$> fmap exUOp ex_uops' <*> fmap immValue ex_uops' <*> ex_valsIn <*> ex_pc)
       where
         runExOp :: ExUOp -> Value -> (Value, Value) -> Value -> (Value, Maybe Value)
         runExOp ExU_Nop _ _ _               = (0, Nothing)
@@ -93,7 +92,7 @@ pipeline =
         runExOp (ExU_AluImm op) imm (x,_) _ = (alu op x imm, Nothing)
         runExOp (ExU_AluReg op) _   (x,y) _ = (alu op x y, Nothing)
 
-    ex_dataRamIn = liftA3 runMemOp (memUOp <$> ex_uops) (immValue <$> ex_uops) ex_valsIn
+    ex_dataRamIn' = liftA3 runMemOp (memUOp <$> ex_uops') (immValue <$> ex_uops') ex_valsIn
       where
         -- TODO check for misaligned access
         runMemOp MemU_Nop _ _ = def
@@ -116,6 +115,14 @@ pipeline =
           , writeVal = Nothing
           }
 
+    -- Calculcate stall signal in parallel with the ALU.
+    stallEx = mem_jumpStall .||. mem_loadStall
+
+    -- Flush the outputs if necessary.
+    ex_uops       = mux stallEx (pure def) ex_uops'
+    ex_maybeJAddr = mux stallEx (pure Nothing) ex_maybeJAddr'
+    ex_dataRamIn  = mux stallEx (pure def) ex_dataRamIn'
+
     ex_loadStall' = liftA3 shouldLoadStall (memUOp <$> ex_uops) (rdReg <$> ex_uops) id_rs
       where
         shouldLoadStall (MemU_Load {}) rd' (rs1, rs2) =
@@ -125,14 +132,14 @@ pipeline =
     ex_out = register 0 ex_out'
 
     ---- Memory
-    mem_uops = register def ex_uops
+    mem_uops = register def (mux stallEx def ex_uops)
 
     -- Handle memory-mapped I/O first.
     (mem_mmioVals, mem_maybeMMIOOut) = mmio ex_dataRamIn
     -- Only access data RAM if the RAM address is not memory mapped.
     mem_dataRamOut = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
 
-    mem_maybeJAddr = register Nothing ex_maybeJAddr'
+    mem_maybeJAddr = register Nothing ex_maybeJAddr
 
     mem_jumpStall = isJust <$> mem_maybeJAddr
     mem_loadStall = register False ex_loadStall'
