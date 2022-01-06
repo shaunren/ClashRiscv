@@ -3,10 +3,7 @@ module ClashRiscv.UOps where
 import           Clash.Prelude
 
 import           ClashRiscv.ALU
-import           ClashRiscv.Instructions        ( DstReg
-                                                , Imm12
-                                                , Imm20
-                                                , Instruction(..)
+import           ClashRiscv.Instructions        ( Instruction(..)
                                                 , InstructionWithDstReg(..)
                                                 , LoadOp
                                                 , StoreOp
@@ -38,7 +35,7 @@ data WbUOp
   deriving (Show, Eq, Generic, NFDataX)
 
 data UOps = UOps
-    { rdReg      :: Maybe RegAddr
+    { rdReg      :: Maybe RegAddr -- ^ isJust <=> rd is nonzero
     , immValue   :: Value
     , readyAtMem :: Bool  -- ^ Data will be ready at the beginning of MEM
     , exUOp      :: ExUOp
@@ -55,18 +52,21 @@ instance Default UOps where
 decodeToUOps :: Instruction -> (UOps, (RegAddr, RegAddr))
 decodeToUOps Nop = (def, (0, 0))
 decodeToUOps (Branch op rs1 rs2 imm) =
-    ( def { immValue = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
+    ( def { immValue = offset
           , exUOp    = ExU_Branch op
           }
     , (bitCoerce rs1, bitCoerce rs2)
     )
+    where offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
 decodeToUOps (Store op rs1 rs2 imm) =
     ( def { immValue = bitCoerce (signExtend imm), memUOp = MemU_Store op }
     , (bitCoerce rs1, bitCoerce rs2)
     )
 decodeToUOps (WithDstReg 0 instr) | not (isJump instr) = (def, (0, 0))
-decodeToUOps (WithDstReg rd instr) = (uops { rdReg = Just $ bitCoerce rd }, rs)
+decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
   where
+    maybeRd = if rd == 0 then Nothing else Just (bitCoerce rd)
+
     (uops, rs) = case instr of
         (Lui imm) ->
             ( def { immValue = unpack (pack imm ++# 0)
@@ -84,15 +84,14 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = Just $ bitCoerce rd }, rs)
             )
         (Jal imm) ->
             ( def
-                { immValue = unpack
-                             $   signExtend
-                             $   pack imm
-                             ++# (0 :: BitVector 1)
+                { immValue = offset
                 , exUOp    = ExU_Jal
                 , wbUOp    = WbU_WriteResult
                 }
             , (0, 0)
             )
+            where
+              offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
         (Jalr rs1 imm) ->
             ( def { immValue = bitCoerce (signExtend imm)
                   , exUOp    = ExU_Jalr
