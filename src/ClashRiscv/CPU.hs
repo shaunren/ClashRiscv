@@ -43,8 +43,9 @@ pipeline =
   let
     ---- Fetch
     if_pc = mux mem_bubbleEx if_prevPcReg (liftA2 fromMaybe if_pcReg mem_maybeJAddr)
+
     if_pcReg = register 0 $ fmap (+4) if_pc
-    if_prevPcReg = register 0 if_pcReg      -- if_pcReg delayed by 1 cycle
+    if_prevPcReg = register 0 if_pc -- Contains if_pc from the previous cycle.
 
     -- ROM: 1 cycle delay
     instrWord = instrRom "rom/rom.bin" $ fmap (truncateB . (`shiftR` 2)) if_pc
@@ -53,7 +54,8 @@ pipeline =
     -- In case EX needs to be bubbled, bring back the current instruction from EX.
     -- In case of jump stall, flush stage.
     id_pc' = register 0 if_pc
-    id_pc = mux mem_bubbleEx ex_pc id_pc'
+    id_pc = mux mem_bubbleEx id_prevPcReg id_pc'
+    id_prevPcReg = register 0 id_pc
 
     -- TODO handle illegal ops
     id_uopsAndRs = handleStall <$> mem_jumpStall <*> mem_bubbleEx <*> id_prevUopsAndRsReg <*> instrWord
