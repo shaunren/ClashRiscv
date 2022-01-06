@@ -8,7 +8,7 @@ import Clash.Intel.ClockGen
 
 import ClashRiscv.Types
 import ClashRiscv.Instructions
-import ClashRiscv.ALU ( alu, aluCompare )
+import ClashRiscv.ALU ( alu, aluCompare, multiplier, ALUMulOp(..) )
 import ClashRiscv.ROM
 import ClashRiscv.DataRAM
 import ClashRiscv.UOps
@@ -42,7 +42,7 @@ pipeline
 pipeline =
   let
     ---- Fetch
-    if_pc = mux mem_loadStall if_prevPcReg (liftA2 fromMaybe if_pcReg mem_maybeJAddr)
+    if_pc = mux mem_bubbleEx if_prevPcReg (liftA2 fromMaybe if_pcReg mem_maybeJAddr)
     if_pcReg = register 0 $ fmap (+4) if_pc
     if_prevPcReg = register 0 if_pcReg      -- if_pcReg delayed by 1 cycle
 
@@ -50,17 +50,17 @@ pipeline =
     instrWord = instrRom "rom/rom.bin" $ fmap (truncateB . (`shiftR` 2)) if_pc
 
     ---- Decode
-    -- In case of load stall, bring back the instruction from EX and bubble EX.
+    -- In case EX needs to be bubbled, bring back the current instruction from EX.
     -- In case of jump stall, flush stage.
     id_pc' = register 0 if_pc
-    id_pc = mux mem_loadStall ex_pc id_pc'
+    id_pc = mux mem_bubbleEx ex_pc id_pc'
 
     -- TODO handle illegal ops
-    id_uopsAndRs = handleStall <$> mem_jumpStall <*> mem_loadStall <*> id_prevUopsAndRsReg <*> instrWord
+    id_uopsAndRs = handleStall <$> mem_jumpStall <*> mem_bubbleEx <*> id_prevUopsAndRsReg <*> instrWord
       where
-        handleStall jumpStall loadStall prevUopsAndRs curInstrWord
+        handleStall jumpStall bubbleEx prevUopsAndRs curInstrWord
           | jumpStall = def
-          | loadStall = prevUopsAndRs
+          | bubbleEx  = prevUopsAndRs
           | otherwise = maybe def decodeToUOps $ decode curInstrWord
     id_prevUopsAndRsReg = register def id_uopsAndRs
 
@@ -115,19 +115,21 @@ pipeline =
           , writeVal = Nothing
           }
 
+    ex_mul' = multiplier (fromMaybe Mul . exMulUOp <$> ex_uops') ex_valsIn -- Available in WB
+    
     -- Calculcate stall signal in parallel with the ALU.
-    stallEx = mem_jumpStall .||. mem_loadStall
+    stallEx = mem_jumpStall .||. mem_bubbleEx
 
     -- Flush the outputs if necessary.
     ex_uops       = mux stallEx (pure def) ex_uops'
     ex_maybeJAddr = mux stallEx (pure Nothing) ex_maybeJAddr'
     ex_dataRamIn  = mux stallEx (pure def) ex_dataRamIn'
 
-    ex_loadStall' = liftA3 shouldLoadStall (memUOp <$> ex_uops) (rdReg <$> ex_uops) id_rs
+    -- Whether or not EX needs to be bubbled in the next cycle.
+    ex_bubbleEx' = liftA3 shouldBubble (readyAtMem <$> ex_uops) (rdReg <$> ex_uops) id_rs
       where
-        shouldLoadStall (MemU_Load {}) rd' (rs1, rs2) =
-          let rd = fromJust rd' in rd == rs1 || rd == rs2
-        shouldLoadStall _ _ _ = False
+        shouldBubble False (Just rd) (rs1, rs2) = rd == rs1 || rd == rs2
+        shouldBubble _ _ _ = False
 
     ex_out = register 0 ex_out'
 
@@ -137,22 +139,25 @@ pipeline =
     -- Handle memory-mapped I/O first.
     (mem_mmioVals, mem_maybeMMIOOut) = mmio ex_dataRamIn
     -- Only access data RAM if the RAM address is not memory mapped.
-    mem_dataRamOut = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
+    mem_dataRamOut' = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
 
     mem_maybeJAddr = register Nothing ex_maybeJAddr
 
     mem_jumpStall = isJust <$> mem_maybeJAddr
-    mem_loadStall = register False ex_loadStall'
+    mem_bubbleEx = register False ex_bubbleEx'
 
-    mem_writeVal' = mux (useRAMOut <$> mem_uops)
-                   (liftA2 fromMaybe mem_dataRamOut mem_maybeMMIOOut)
-                   ex_out
-      where useRAMOut = (WbU_WriteRAMOut ==) . wbUOp
+    mem_dataRamOut = register 0 $ liftA2 fromMaybe mem_dataRamOut' mem_maybeMMIOOut
+    mem_out = register 0 ex_out
 
     ---- Writeback
-    wb_writeVal = register 0 mem_writeVal'
-
     wb_uops = register def mem_uops
+
+    wb_writeVal = selectWriteVal <$> fmap wbUOp wb_uops <*> mem_out <*> ex_mul' <*> mem_dataRamOut 
+      where
+        selectWriteVal WbU_WriteMulResult _ mulOut _  = mulOut
+        selectWriteVal WbU_WriteRAMOut _ _ dataRamOut = dataRamOut
+        selectWriteVal _ out _ _                      = out
+
     
     wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) (rdReg <$> wb_uops) wb_writeVal
       where

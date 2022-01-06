@@ -3,7 +3,8 @@ module ClashRiscv.UOps where
 import           Clash.Prelude
 
 import           ClashRiscv.ALU
-import           ClashRiscv.Instructions        ( Instruction(..)
+import           ClashRiscv.Instructions        ( ALUIMOp(..)
+                                                , Instruction(..)
                                                 , InstructionWithDstReg(..)
                                                 , LoadOp
                                                 , StoreOp
@@ -22,6 +23,8 @@ data ExUOp
   | ExU_AluReg ALUOp
   deriving (Show, Eq, Generic, NFDataX)
 
+type ExMulUop = Maybe ALUMulOp
+
 data MemUOp
   = MemU_Nop
   | MemU_Store StoreOp
@@ -31,6 +34,7 @@ data MemUOp
 data WbUOp
   = WbU_Nop
   | WbU_WriteResult
+  | WbU_WriteMulResult
   | WbU_WriteRAMOut
   deriving (Show, Eq, Generic, NFDataX)
 
@@ -39,22 +43,21 @@ data UOps = UOps
     , immValue   :: Value
     , readyAtMem :: Bool  -- ^ Data will be ready at the beginning of MEM
     , exUOp      :: ExUOp
+    , exMulUOp   :: ExMulUop
     , memUOp     :: MemUOp
     , wbUOp      :: WbUOp
     }
     deriving (Show, Eq, Generic, NFDataX)
 
 instance Default UOps where
-    def = UOps Nothing 0 True ExU_Nop MemU_Nop WbU_Nop
+    def = UOps Nothing 0 True ExU_Nop Nothing MemU_Nop WbU_Nop
 
 
 -- | Decodes an instruction into UOps.
 decodeToUOps :: Instruction -> (UOps, (RegAddr, RegAddr))
 decodeToUOps Nop = (def, (0, 0))
 decodeToUOps (Branch op rs1 rs2 imm) =
-    ( def { immValue = offset
-          , exUOp    = ExU_Branch op
-          }
+    ( def { immValue = offset, exUOp = ExU_Branch op }
     , (bitCoerce rs1, bitCoerce rs2)
     )
     where offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
@@ -65,7 +68,7 @@ decodeToUOps (Store op rs1 rs2 imm) =
 decodeToUOps (WithDstReg 0 instr) | not (isJump instr) = (def, (0, 0))
 decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
   where
-    maybeRd = if rd == 0 then Nothing else Just (bitCoerce rd)
+    maybeRd    = if rd == 0 then Nothing else Just (bitCoerce rd)
 
     (uops, rs) = case instr of
         (Lui imm) ->
@@ -83,15 +86,14 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
             , (0, 0)
             )
         (Jal imm) ->
-            ( def
-                { immValue = offset
-                , exUOp    = ExU_Jal
-                , wbUOp    = WbU_WriteResult
-                }
+            ( def { immValue = offset
+                  , exUOp    = ExU_Jal
+                  , wbUOp    = WbU_WriteResult
+                  }
             , (0, 0)
             )
-            where
-              offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
+          where
+            offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
         (Jalr rs1 imm) ->
             ( def { immValue = bitCoerce (signExtend imm)
                   , exUOp    = ExU_Jalr
@@ -108,14 +110,23 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
             , (bitCoerce rs1, 0)
             )
         (AluImm op rs1 imm) ->
-            ( def { immValue = bitCoerce (signExtend imm)
-                  , exUOp    = ExU_AluImm op
-                  , wbUOp    = WbU_WriteResult
-                  }
-            , (bitCoerce rs1, 0)
-            )
-        (AluReg op rs1 rs2) ->
-            ( def { exUOp = ExU_AluReg op, wbUOp = WbU_WriteResult }
-            , (bitCoerce rs1, bitCoerce rs2)
-            )
+            let (ALUI op') = op -- Only I instructions have imm values
+            in  ( def { immValue = bitCoerce (signExtend imm)
+                      , exUOp    = ExU_AluImm op'
+                      , wbUOp    = WbU_WriteResult
+                      }
+                , (bitCoerce rs1, 0)
+                )
+        (AluReg op rs1 rs2) -> case op of
+            (ALUI op') ->
+                ( def { exUOp = ExU_AluReg op', wbUOp = WbU_WriteResult }
+                , (bitCoerce rs1, bitCoerce rs2)
+                )
+            (ALUM op') ->
+                ( def { readyAtMem = False           -- mul is complete at WB
+                      , exMulUOp   = Just op'
+                      , wbUOp      = WbU_WriteMulResult
+                      }
+                , (bitCoerce rs1, bitCoerce rs2)
+                )
 decodeToUOps _ = (def, (0, 0))

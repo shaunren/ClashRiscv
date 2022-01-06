@@ -39,8 +39,13 @@ data InstructionWithDstReg
   | Jal Imm20
   | Jalr Register Imm12
   | Load LoadOp Register Imm12
-  | AluImm ALUOp Register Imm12
-  | AluReg ALUOp Register Register
+  | AluImm ALUIMOp Register Imm12
+  | AluReg ALUIMOp Register Register
+  deriving (Show, Generic, NFDataX)
+
+data ALUIMOp
+  = ALUI ALUOp
+  | ALUM ALUMulOp
   deriving (Show, Generic, NFDataX)
 
 decode :: Unsigned 32 -> Maybe Instruction
@@ -109,14 +114,14 @@ decode word = case opcode of
     withRd  = Just . WithDstReg rd
 
 
-decodeAluOp :: Bool -> BitVector 3 -> BitVector 7 -> Maybe ALUOp
+decodeAluOp :: Bool -> BitVector 3 -> BitVector 7 -> Maybe ALUIMOp
 decodeAluOp False funct3 1
-  | funct3 < 4 = Just $ (Mul :> Mulh :> Mulhsu :> Mulhu :> Div :> Divu :> Rem :> Remu :> Nil) !! funct3
+  | funct3 < 4 = Just . ALUM $ (Mul :> Mulh :> Mulhsu :> Mulhu :> Nil) !! funct3
   | otherwise  = Nothing -- TODO implement division ops
 decodeAluOp isImm funct3 funct7 = case funct3 of
   0b000
-    | isImm || funct7 == 0 -> Just Add
-    | funct7 == 0b0100000  -> Just Sub
+    | isImm || funct7 == 0 -> Just (ALUI Add)
+    | funct7 == 0b0100000  -> Just (ALUI Sub)
     | otherwise            -> Nothing
   0b010 -> guardInt Slt
   0b011 -> guardInt Sltu
@@ -124,16 +129,17 @@ decodeAluOp isImm funct3 funct7 = case funct3 of
   0b110 -> guardInt Or
   0b111 -> guardInt And
   0b001
-    | funct7 == 0 -> Just Sll
+    | funct7 == 0 -> Just (ALUI Sll)
     | otherwise   -> Nothing
   0b101
-    | funct7 == 0          -> Just Srl
-    | funct7 == 0b0100000  -> Just Sra
+    | funct7 == 0          -> Just (ALUI Srl)
+    | funct7 == 0b0100000  -> Just (ALUI Sra)
     | otherwise            -> Nothing
   _ -> Nothing
 
   where
-    guardInt x = if isImm || funct7 == 0 then Just x else Nothing
+    guardInt x = if isImm || funct7 == 0 then Just (ALUI x) else Nothing
+
 
 isNop :: Instruction -> Bool
 isNop Nop              = True
