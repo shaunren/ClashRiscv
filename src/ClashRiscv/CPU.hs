@@ -8,7 +8,7 @@ import Clash.Intel.ClockGen
 
 import ClashRiscv.Types
 import ClashRiscv.Instructions
-import ClashRiscv.ALU ( alu, aluCompare, multiplier, ALUMulOp(..) )
+import ClashRiscv.ALU ( alu, aluCompare, multiplier, divider, ALUMulOp(..), ALUDivOp(..) )
 import ClashRiscv.ROM
 import ClashRiscv.DataRAM
 import ClashRiscv.UOps
@@ -42,7 +42,7 @@ pipeline
 pipeline =
   let
     ---- Fetch
-    if_pc = mux mem_bubbleEx if_prevPcReg (liftA2 fromMaybe if_pcReg mem_maybeJAddr)
+    if_pc =  liftA2 fromMaybe (mux mem_bubbleEx if_prevPcReg if_pcReg) mem_maybeJAddr
 
     if_pcReg = register 0 $ fmap (+4) if_pc
     if_prevPcReg = register 0 if_pc -- Contains if_pc from the previous cycle.
@@ -67,7 +67,7 @@ pipeline =
     id_prevUopsAndRsReg = register def id_uopsAndRs
 
     (id_uops, id_rs) = unbundle id_uopsAndRs
-    id_bypassFrom = liftA3 trackBypass id_rs ex_uops mem_uops
+    id_bypassFrom = trackBypass <$> id_rs <*> ex_uops <*> ex_divEmitting <*> mem_prevUopsFromEx <*> mem_uops
 
     id_regsOut = regFile id_rs wb_writeReg
 
@@ -78,7 +78,7 @@ pipeline =
     ex_bypassFrom = register (BypassNone, BypassNone) id_bypassFrom
 
     -- Forward registers from WB and MEM if necessary.
-    ex_valsIn = bypassReg <$> ex_bypassFrom <*> id_regsOut <*> ex_out <*> wb_writeVal
+    ex_valsIn = bypassReg <$> ex_bypassFrom <*> id_regsOut <*> mem_in <*> wb_in
 
     (ex_out', ex_maybeJAddr') = unbundle (runExOp <$> fmap exUOp ex_uops' <*> fmap immValue ex_uops' <*> ex_valsIn <*> ex_pc)
       where
@@ -117,8 +117,8 @@ pipeline =
           , writeVal = Nothing
           }
 
-    ex_mul' = multiplier (fromMaybe Mul . exMulUOp <$> ex_uops') ex_valsIn -- Available in WB
-    
+    ex_mul' = multiplier (fromMaybe Mul . exMulUOp <$> ex_uops') ex_valsIn -- Ready in WB
+
     -- Calculcate stall signal in parallel with the ALU.
     stallEx = mem_jumpStall .||. mem_bubbleEx
 
@@ -127,46 +127,87 @@ pipeline =
     ex_maybeJAddr = mux stallEx (pure Nothing) ex_maybeJAddr'
     ex_dataRamIn  = mux stallEx (pure def) ex_dataRamIn'
 
-    -- Whether or not EX needs to be bubbled in the next cycle.
-    ex_bubbleEx' = liftA3 shouldBubble (readyAtMem <$> ex_uops) (rdReg <$> ex_uops) id_rs
-      where
-        shouldBubble False (Just rd) (rs1, rs2) = rd == rs1 || rd == rs2
-        shouldBubble _ _ _ = False
+    ex_prevDataRamIn = register def ex_dataRamIn
 
-    ex_out = register 0 ex_out'
+    -- divider: 16 cycles latency, 2 cycles latency for invalid inputs
+    (ex_maybeDivRd, ex_maybeDiv) =
+      unbundle $ divider flush (mux stallEx (pure Nothing) $ dividerIn <$> ex_uops') ex_valsIn
+      where
+        dividerIn u = do
+          rd <- rdReg u
+          op <- exDivUOp u
+          return (rd, op)
+        flush = (isJust . rdReg <$> ex_uops') .&&. (fmap rdReg ex_uops' .==. ex_maybeDivRd)
+    ex_divBusy = isJust <$> ex_maybeDivRd
+    ex_divEmitting = isJust <$> ex_maybeDiv
+
+    -- Whether or not EX needs to be bubbled in the next cycle (excluding when div emits).
+    ex_bubbleEx' = shouldBubble <$> ex_uops <*> ex_maybeDivRd <*> ex_divEmitting <*> id_rs
+      where
+        shouldBubble u maybeDivRd divEmitting (rs1, rs2) = needsWbOut || needsDivOut || needsDiv
+          where
+            needsWbOut = not (readyAtMem u) && maybe False (\rd -> rd == rs1 || rd == rs2) (rdReg u)
+            needsDivOut = not divEmitting && maybe False (\rd -> rd == rs1 || rd == rs2) maybeDivRd
+            needsDiv = isJust (exDivUOp u) && isJust (maybeDivRd)
+
+    ex_out     = register 0 ex_out'
+    ex_prevOut = register 0 ex_out
+
+    ex_prevDivEmitting = register False ex_divEmitting
 
     ---- Memory
-    mem_uops = register def (mux stallEx def ex_uops)
+    mem_uopsFromEx = register def (mux stallEx def ex_uops)
+    mem_prevUopsFromEx = register def mem_uopsFromEx
 
+    mem_uops = selectUop <$> ex_prevDivEmitting <*> ex_divEmitting <*> ex_maybeDivRd <*> mem_uopsFromEx <*> mem_prevUopsFromEx
+      where
+        selectUop prevDivEmitting divEmitting maybeDivRd uopsFromEx prevUopsFromEx
+          | divEmitting     =
+            def { rdReg    = maybeDivRd
+                , exDivUOp = Just Div   -- FIXME hack
+                , wbUOp    = WbU_WriteResult
+                }
+          | prevDivEmitting = prevUopsFromEx
+          | otherwise       = uopsFromEx
+
+    mem_in = selectIn <$> ex_prevDivEmitting <*> ex_divEmitting <*> ex_maybeDiv <*> ex_out <*> ex_prevOut
+      where
+        selectIn prevDivEmitting divEmitting maybeDiv exOut exPrevOut
+          | divEmitting     = fromJust maybeDiv
+          | prevDivEmitting = exPrevOut
+          | otherwise       = exOut
+
+    mem_dataRamIn' = mux ex_prevDivEmitting ex_prevDataRamIn ex_dataRamIn -- NOTE: from EX
     -- Handle memory-mapped I/O first.
-    (mem_mmioVals, mem_maybeMMIOOut) = mmio ex_dataRamIn
+    (mem_mmioVals, mem_maybeMMIOOut) = mmio mem_dataRamIn'
     -- Only access data RAM if the RAM address is not memory mapped.
-    mem_dataRamOut' = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) ex_dataRamIn
+    mem_dataRamOut' = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) mem_dataRamIn'
 
     mem_maybeJAddr = register Nothing ex_maybeJAddr
 
     mem_jumpStall = isJust <$> mem_maybeJAddr
-    mem_bubbleEx = register False ex_bubbleEx'
+    mem_bubbleEx = (register False ex_bubbleEx') .||. ex_divEmitting
 
     mem_dataRamOut = register 0 $ liftA2 fromMaybe mem_dataRamOut' mem_maybeMMIOOut
-    mem_out = register 0 ex_out
+    mem_out = register 0 mem_in
 
     ---- Writeback
     wb_uops = register def mem_uops
 
-    wb_writeVal = selectWriteVal <$> fmap wbUOp wb_uops <*> mem_out <*> ex_mul' <*> mem_dataRamOut 
+    wb_in = selectIn <$> fmap wbUOp wb_uops <*> mem_out <*> ex_mul' <*> mem_dataRamOut 
       where
-        selectWriteVal WbU_WriteMulResult _ mulOut _  = mulOut
-        selectWriteVal WbU_WriteRAMOut _ _ dataRamOut = dataRamOut
-        selectWriteVal _ out _ _                      = out
+        selectIn WbU_WriteMulResult _ mulOut _  = mulOut
+        selectIn WbU_WriteRAMOut _ _ dataRamOut = dataRamOut
+        selectIn _ out _ _                      = out
 
     
-    wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) (rdReg <$> wb_uops) wb_writeVal
+    wb_writeReg = liftA3 runWbOp (wbUOp <$> wb_uops) (rdReg <$> wb_uops) wb_in
       where
         runWbOp WbU_Nop _ _   = Nothing
         runWbOp _ maybeRd val = maybeRd >>= \rd -> Just (rd, val)
   in
     mmioLEDs <$> mem_mmioVals
+
 
 data BypassFrom = BypassNone | BypassMem | BypassWb
   deriving (Eq, Show, Generic, NFDataX)
@@ -174,10 +215,12 @@ data BypassFrom = BypassNone | BypassMem | BypassWb
 trackBypass
   :: (RegReadAddr, RegReadAddr)
   -> UOps                        -- ^ EX stage UOps
+  -> Bool                        -- ^ MEM div emitting
+  -> UOps                        -- ^ Saved prev EX UOps
   -> UOps                        -- ^ MEM stage UOps
   -> (BypassFrom, BypassFrom)
 {-# INLINE trackBypass #-}
-trackBypass (rs1, rs2) exUOps memUOps = (b1, b2)
+trackBypass (rs1, rs2) exUOps memDivEmitting prevExUOps memUOps = (b1, b2)
   where
     (b1', b2') = fromMaybe (BypassNone, BypassNone) $ do
       rd <- rdReg memUOps
@@ -185,8 +228,9 @@ trackBypass (rs1, rs2) exUOps memUOps = (b1, b2)
              , if rd == rs2 then BypassWb else BypassNone
              )
     (b1, b2) = fromMaybe (b1', b2') $ do
-      guard $ readyAtMem exUOps
-      rd <- rdReg exUOps
+      let u = if memDivEmitting then prevExUOps else exUOps
+      guard $ readyAtMem u
+      rd <- rdReg u
       return ( if rd == rs1 then BypassMem else b1'
              , if rd == rs2 then BypassMem else b2'
              )

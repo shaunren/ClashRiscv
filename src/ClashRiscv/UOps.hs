@@ -23,7 +23,8 @@ data ExUOp
   | ExU_AluReg ALUOp
   deriving (Show, Eq, Generic, NFDataX)
 
-type ExMulUop = Maybe ALUMulOp
+type ExMulUOp = Maybe ALUMulOp
+type ExDivUOp = Maybe ALUDivOp
 
 data MemUOp
   = MemU_Nop
@@ -43,14 +44,15 @@ data UOps = UOps
     , immValue   :: Value
     , readyAtMem :: Bool  -- ^ Data will be ready at the beginning of MEM
     , exUOp      :: ExUOp
-    , exMulUOp   :: ExMulUop
+    , exMulUOp   :: ExMulUOp
+    , exDivUOp   :: ExDivUOp
     , memUOp     :: MemUOp
     , wbUOp      :: WbUOp
     }
     deriving (Show, Eq, Generic, NFDataX)
 
 instance Default UOps where
-    def = UOps Nothing 0 True ExU_Nop Nothing MemU_Nop WbU_Nop
+    def = UOps Nothing 0 True ExU_Nop Nothing Nothing MemU_Nop WbU_Nop
 
 
 -- | Decodes an instruction into UOps.
@@ -127,6 +129,11 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
                       , exMulUOp   = Just op'
                       , wbUOp      = WbU_WriteMulResult
                       }
+                , (bitCoerce rs1, bitCoerce rs2)
+                )
+            (ALUD op') ->
+              ( def { exDivUOp   = Just op'
+                    }
                 , (bitCoerce rs1, bitCoerce rs2)
                 )
 decodeToUOps _ = (def, (0, 0))

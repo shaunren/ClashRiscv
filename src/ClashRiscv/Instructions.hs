@@ -46,6 +46,7 @@ data InstructionWithDstReg
 data ALUIMOp
   = ALUI ALUOp
   | ALUM ALUMulOp
+  | ALUD ALUDivOp
   deriving (Show, Generic, NFDataX)
 
 decode :: Unsigned 32 -> Maybe Instruction
@@ -117,7 +118,7 @@ decode word = case opcode of
 decodeAluOp :: Bool -> BitVector 3 -> BitVector 7 -> Maybe ALUIMOp
 decodeAluOp False funct3 1
   | funct3 < 4 = Just . ALUM $ (Mul :> Mulh :> Mulhsu :> Mulhu :> Nil) !! funct3
-  | otherwise  = Nothing -- TODO implement division ops
+  | otherwise  = Just . ALUD $ (Div :> Divu :> Rem :> Remu :> Nil) !! (funct3 - 4)
 decodeAluOp isImm funct3 funct7 = case funct3 of
   0b000
     | isImm || funct7 == 0 -> Just (ALUI Add)
