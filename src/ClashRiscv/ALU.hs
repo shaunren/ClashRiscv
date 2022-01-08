@@ -49,13 +49,6 @@ alu op x1 x2 = case op of
   Or     -> x1 .|. x2
   And    -> x1 .&. x2
 
-  -- TODO implement division ops
-  -- TODO handle divide by zero
-  --Div -> bitCoerce $ s_x1 `div` s_x2
-  --Divu -> x1 `div` x2
-  --Rem -> bitCoerce $ s_x1 `mod` s_x2
-  --Remu -> x1 `mod` x2
-
   where
     s_x1  = bitCoerce x1 :: SignedValue
     s_x2  = bitCoerce x2 :: SignedValue
@@ -112,7 +105,7 @@ multiplier mulOpIn xyIn = out
         outl  = truncateB outl'
         -- Unsigned upper half result
         outhU = (zeroExtend $ bitCoerce $ slice d32 d16 mid) + hh + fromIntegral (msb outl')
-        hCorr = xhCorr + yhCorr
+        hCorr = -(xhCorr + yhCorr)
 
     stage2Out = register (Mul, 0, 0, 0) $ stage2F <$> stage1Out
 
