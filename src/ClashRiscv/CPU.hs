@@ -138,7 +138,6 @@ pipeline =
           op <- exDivUOp u
           return (rd, op)
         flush = (isJust . rdReg <$> ex_uops') .&&. (fmap rdReg ex_uops' .==. ex_maybeDivRd)
-    ex_divBusy = isJust <$> ex_maybeDivRd
     ex_divEmitting = isJust <$> ex_maybeDiv
 
     -- Whether or not EX needs to be bubbled in the next cycle (excluding when div emits).
@@ -148,7 +147,7 @@ pipeline =
           where
             needsWbOut = not (readyAtMem u) && maybe False (\rd -> rd == rs1 || rd == rs2) (rdReg u)
             needsDivOut = not divEmitting && maybe False (\rd -> rd == rs1 || rd == rs2) maybeDivRd
-            needsDiv = isJust (exDivUOp u) && isJust (maybeDivRd)
+            needsDiv = isJust (exDivUOp u) && isJust maybeDivRd
 
     ex_out     = register 0 ex_out'
     ex_prevOut = register 0 ex_out
@@ -186,7 +185,7 @@ pipeline =
     mem_maybeJAddr = register Nothing ex_maybeJAddr
 
     mem_jumpStall = isJust <$> mem_maybeJAddr
-    mem_bubbleEx = (register False ex_bubbleEx') .||. ex_divEmitting
+    mem_bubbleEx = register False ex_bubbleEx' .||. ex_divEmitting
 
     mem_dataRamOut = register 0 $ liftA2 fromMaybe mem_dataRamOut' mem_maybeMMIOOut
     mem_out = register 0 mem_in

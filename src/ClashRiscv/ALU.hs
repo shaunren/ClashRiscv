@@ -73,7 +73,7 @@ multiplier
 {-# INLINE multiplier #-}
 multiplier mulOpIn xyIn = out
   where    
-    stage1F mulOp (x,y) = (mulOp, ll, hh, mid, xhCorr, yhCorr)
+    stage1F mulOp (x,y) = (isMul, ll, hh, mid, xhCorr, yhCorr)
       where
         xl, xh, yl, yh :: Unsigned 16
         xl = bitCoerce $ slice d15 d0 x
@@ -96,10 +96,12 @@ multiplier mulOpIn xyIn = out
         xhCorr = if xNeg then y else 0
         yhCorr = if yNeg then x else 0
 
-    stage1Out = register (Mul, 0, 0, 0, 0, 0) $ stage1F <$> mulOpIn <*> xyIn
+        isMul = mulOp == Mul
 
-    stage2F :: (ALUMulOp, Unsigned 32, Unsigned 32, Unsigned 33, Unsigned 32, Unsigned 32) -> (ALUMulOp, Unsigned 32, Unsigned 32, Unsigned 32)
-    stage2F (mulOp, ll, hh, mid, xhCorr, yhCorr) = (mulOp, outl, outhU, hCorr)
+    stage1Out = register (True, 0, 0, 0, 0, 0) $ stage1F <$> mulOpIn <*> xyIn
+
+    stage2F :: (Bool, Unsigned 32, Unsigned 32, Unsigned 33, Unsigned 32, Unsigned 32) -> (Bool, Unsigned 32, Unsigned 32, Unsigned 32)
+    stage2F (isMul, ll, hh, mid, xhCorr, yhCorr) = (isMul, outl, outhU, hCorr)
       where
         outl' = ll `add` ((truncateB mid :: Unsigned 32) `shiftL` 16)
         outl  = truncateB outl'
@@ -107,11 +109,11 @@ multiplier mulOpIn xyIn = out
         outhU = (zeroExtend $ bitCoerce $ slice d32 d16 mid) + hh + fromIntegral (msb outl')
         hCorr = -(xhCorr + yhCorr)
 
-    stage2Out = register (Mul, 0, 0, 0) $ stage2F <$> stage1Out
+    stage2Out = register (True, 0, 0, 0) $ stage2F <$> stage1Out
 
-    stage3F (mulOp, outl, outhU, hCorr)
-      | mulOp == Mul = outl
-      | otherwise    = outhU + hCorr
+    stage3F (isMul, outl, outhU, hCorr)
+      | isMul     = outl
+      | otherwise = outhU + hCorr
     out = stage3F <$> stage2Out
 
 
