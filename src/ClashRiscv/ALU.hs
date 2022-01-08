@@ -123,17 +123,17 @@ multiplier mulOpIn xyIn = out
 
 
 data DividerState = DividerState
-  { divRd        :: Maybe RegAddr      -- Nothing implies the divider is idle.
-  , divIter      :: Unsigned 5         -- ^ Iteration counter
-  , divSigned    :: Bool
-  , divOutputRem :: Bool
-  , divDivisor   :: Unsigned 32
-  , divQuot      :: Unsigned 32
-  , divRem       :: Unsigned 32
+  { divRd                   :: Maybe RegAddr      -- Nothing implies the divider is idle.
+  , divIter                 :: Unsigned 5         -- ^ Iteration counter
+  , divSigned               :: Bool
+  , divOutputRem            :: Bool
+  , divPreMultipliedDivisors :: Vec 3 (Unsigned 34) -- ^ <3*divisor, 2*divisor, divisor>
+  , divQuot                 :: Unsigned 32
+  , divRem                  :: Unsigned 32
   } deriving (Generic, NFDataX)
 
 instance Default DividerState where
-  def = DividerState Nothing 0 False False 0 0 0
+  def = DividerState Nothing 0 False False (repeat 0) 0 0
 
 
 -- | 16 cycle divider circuit that processes one input at a time.
@@ -153,7 +153,7 @@ divider flush maybeRdAndOpIn xyIn =
       | otherwise   = (maybeRd, Nothing)
 
     go :: DividerState -> (Bool, Maybe (RegAddr, ALUDivOp), (Value, Value)) -> DividerState
-    go state@(DividerState maybeRd it _ _ divisor q r) (flush, maybeRdAndOp, (x,y))
+    go state@(DividerState maybeRd it _ _ pmDivisors q r) (flush, maybeRdAndOp, (x,y))
       | flush || isNothing maybeRd || msb it == 1 = case maybeRdAndOp of
           Nothing       -> def
           Just (rd, op) -> newState
@@ -161,24 +161,25 @@ divider flush maybeRdAndOpIn xyIn =
               signed    = False -- TODO implement op == Div || op == Rem
               outputRem = op == Rem || op == Remu
               newState
-                | y == 0 = DividerState (Just rd) 16 signed outputRem 0 (-1) x
+                | y == 0 = DividerState (Just rd) 16 signed outputRem (repeat 0) (-1) x
                 | signed && x == (1 `shiftL` 31) && y == -1 =
-                    DividerState (Just rd) 16 signed outputRem (-1) (1 `shiftL` 31) 0
-                | otherwise = DividerState (Just rd) 0 signed outputRem y x 0
+                    DividerState (Just rd) 16 signed outputRem (repeat $ -1) (1 `shiftL` 31) 0
+                | otherwise =
+                  let y2   = unpack $ pack y ++# (0 :: BitVector 1)
+                      y3   = y2 `add` y
+                      pmds = y3 :> zeroExtend y2 :> zeroExtend y :> Nil
+                  in  DividerState (Just rd) 0 signed outputRem pmds x 0
       | otherwise =
         let pr        = unpack (slice d29 d0 r ++# slice d31 d30 q) :: Unsigned 32
-            subs      = map (\i -> (i, pr `sub` (divisor * zeroExtend i)))
-                      $ (3 :: Unsigned 2) :> 2 :> 1 :> 0 :> Nil
-            -- Find the leftmost (i, s) pair in subs with s >= 0.
-            (cqb,r'') = fold f subs
-              where f (i,s) (i',s')
-                      | msb s  == 0 = (i,s)
-                      | msb s' == 0 = (i',s')
-                      | otherwise   = (i,s)
-            q' = unpack $ slice d29 d0 q ++# pack cqb
-            r' = truncateB r''
+            -- <pr - 3*d, pr - 2*d, pr - d>
+            subs      = map (pr `sub`) pmDivisors
+            -- cqb = max i in [0..3] with pr - i*d >= 0,
+            -- r' = pr - cqb*d.
+            (cqb,r') = case findIndex ((== 0) . msb) subs of
+              Nothing   -> (0, pr)
+              (Just ix) -> (3 - (pack ix :: BitVector 2), truncateB $ subs !! ix)
+            q' = unpack $ slice d29 d0 q ++# cqb
         in  state { divIter = it + 1, divQuot = q', divRem = r' }
-
 
 {-
 dividerPipelined
