@@ -118,20 +118,21 @@ multiplier mulOpIn xyIn = out
 
 
 data DividerState = DividerState
-  { divRd                    :: Maybe RegAddr       -- ^ Nothing implies that the divider is idle.
-  , divIter                  :: Unsigned 5          -- ^ Iteration counter
+  { divRd                    :: Maybe RegAddr        -- ^ Nothing implies that the divider is idle.
+  , divIter                  :: Unsigned 5           -- ^ Iteration counter
+  , divSigned                :: Bool
   , divOutputRem             :: Bool
-  , divNegateOutput          :: Bool                -- ^ Whether or not the output needs to be negated
-  , divPreMultipliedDivisors :: Vec 3 (Unsigned 34) -- ^ <3*divisor, 2*divisor, divisor>
+  , divNegateOutput          :: Bool                 -- ^ Whether or not the output needs to be negated.
+  , divPreMultipliedDivisors :: Vec 3 (Unsigned 34)  -- ^ <3*divisor, 2*divisor, divisor>
   , divQuot                  :: Unsigned 32
   , divRem                   :: Unsigned 32
   } deriving (Generic, NFDataX)
 
 instance Default DividerState where
-  def = DividerState Nothing 0 False False (repeat 0) 0 0
+  def = DividerState Nothing 0 False False False (repeat 0) 0 0
 
 
--- | 16 cycle divider circuit that processes one input at a time.
+-- | 17 cycle divider circuit that processes one input at a time.
 divider
   :: HiddenClockResetEnable dom
   => Signal dom Bool                         -- ^ flush unit
@@ -143,38 +144,44 @@ divider flush maybeRdAndOpIn xyIn =
 
   where
     output :: DividerState -> (Maybe RegAddr, Maybe Value)
-    output (DividerState maybeRd it outrem negateout _ q r)
-      | msb it == 1 =
+    output (DividerState maybeRd it _ outrem negateout _ q r)
+      | it == 17 =
         let outu = if outrem    then r else q
             out  = if negateout then -outu else outu
         in  (maybeRd, Just out)
       | otherwise   = (maybeRd, Nothing)
 
     go :: DividerState -> (Bool, Maybe (RegAddr, ALUDivOp), (Value, Value)) -> DividerState
-    go state@(DividerState maybeRd it _ _ pmDivisors q r) (flush, maybeRdAndOp, (x,y))
-      | flush || isNothing maybeRd || msb it == 1 = case maybeRdAndOp of
+    go state (flush, maybeRdAndOp, (x,y))
+      | flush || isNothing (divRd state) || divIter state == 17 = case maybeRdAndOp of
           Nothing       -> def
-          Just (rd, op) -> newState
+          Just (rd, op) -> DividerState (Just rd) 0 signed outputRem False (repeat 0) x y
             where
               signed    = op == Div || op == Rem
               outputRem = op == Rem || op == Remu
-              xNeg      = signed && msb x == 1
-              yNeg      = signed && msb y == 1
-              absx      = if xNeg then -x else x
-              absy      = if yNeg then -y else y
-              negateOutput
-                | outputRem = xNeg
-                | otherwise = xNeg `xor` yNeg
-              newState
-                | y == 0 = DividerState (Just rd) 16 outputRem False (repeat 0) (-1) x
-                | signed && x == (1 `shiftL` 31) && y == -1 =
-                    DividerState (Just rd) 16 outputRem False (repeat $ -1) (1 `shiftL` 31) 0
-                | otherwise =
-                  let y2   = unpack $ pack absy ++# (0 :: BitVector 1)
-                      y3   = y2 `add` absy
-                      pmds = y3 :> zeroExtend y2 :> zeroExtend absy :> Nil
-                  in  DividerState (Just rd) 0 outputRem negateOutput pmds absx 0
-      | otherwise =
+    go state@(DividerState _ it signed outputRem _ _ x y) _
+      | it == 0 = newState
+        where
+          xNeg = signed && msb x == 1
+          yNeg = signed && msb y == 1
+          absx = if xNeg then -x else x
+          absy = if yNeg then -y else y
+          
+          negateOutput
+            | outputRem = xNeg
+            | otherwise = xNeg `xor` yNeg
+        
+          newState
+            | y == 0 =
+                state { divIter = 17, divQuot = -1, divRem = x }
+            | signed && x == (1 `shiftL` 31) && y == -1 =
+                state { divIter = 17, divQuot = 1 `shiftL` 31, divRem = 0 }
+            | otherwise =
+                let y2   = unpack $ pack absy ++# (0 :: BitVector 1)
+                    y3   = y2 `add` absy
+                    pmds = y3 :> zeroExtend y2 :> zeroExtend absy :> Nil
+                in  state { divIter = 1, divNegateOutput = negateOutput, divPreMultipliedDivisors = pmds, divQuot = absx, divRem = 0 }
+    go state@(DividerState _ it _ _ _ pmDivisors q r) _ =
         let pr        = unpack (slice d29 d0 r ++# slice d31 d30 q) :: Unsigned 32
             -- <pr - 3*d, pr - 2*d, pr - d>
             subs      = map (pr `sub`) pmDivisors
