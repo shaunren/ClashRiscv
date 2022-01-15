@@ -4,9 +4,9 @@ import           Clash.Prelude
 
 import           ClashRiscv.ALU
 import           ClashRiscv.Instructions        ( ALUIMOp(..)
+                                                , DataOp
                                                 , Instruction(..)
                                                 , InstructionWithDstReg(..)
-                                                , DataOp
                                                 , isJump
                                                 )
 import           ClashRiscv.Types
@@ -56,12 +56,14 @@ instance Default UOps where
 
 -- | Decodes an instruction into UOps.
 decodeToUOps :: Instruction -> (UOps, (RegAddr, RegAddr))
+{-# INLINE decodeToUOps #-}
 decodeToUOps Nop = (def, (0, 0))
 decodeToUOps (Branch op rs1 rs2 imm) =
-    ( def { immValue = offset, exUOp = ExU_Branch op }
+    ( def { immValue = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
+          , exUOp    = ExU_Branch op
+          }
     , (bitCoerce rs1, bitCoerce rs2)
     )
-    where offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
 decodeToUOps (Store op rs1 rs2 imm) =
     ( def { immValue = bitCoerce (signExtend imm), memUOp = MemU_Store op }
     , (bitCoerce rs1, bitCoerce rs2)
@@ -87,14 +89,16 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
             , (0, 0)
             )
         (Jal imm) ->
-            ( def { immValue = offset
-                  , exUOp    = ExU_Jal
-                  , wbUOp    = WbU_WriteResult
-                  }
+            ( def
+                { immValue = unpack
+                             $   signExtend
+                             $   pack imm
+                             ++# (0 :: BitVector 1)
+                , exUOp    = ExU_Jal
+                , wbUOp    = WbU_WriteResult
+                }
             , (0, 0)
             )
-          where
-            offset = unpack $ signExtend $ pack imm ++# (0 :: BitVector 1)
         (Jalr rs1 imm) ->
             ( def { immValue = bitCoerce (signExtend imm)
                   , exUOp    = ExU_Jalr
@@ -131,8 +135,5 @@ decodeToUOps (WithDstReg rd instr) = (uops { rdReg = maybeRd }, rs)
                 , (bitCoerce rs1, bitCoerce rs2)
                 )
             (ALUD op') ->
-              ( def { exDivUOp   = Just op'
-                    }
-                , (bitCoerce rs1, bitCoerce rs2)
-                )
+                (def { exDivUOp = Just op' }, (bitCoerce rs1, bitCoerce rs2))
 decodeToUOps _ = (def, (0, 0))

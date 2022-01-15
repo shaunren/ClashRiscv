@@ -118,6 +118,7 @@ multiplier mulOpIn xyIn = out
 data DividerState = DividerState
   { divRd                    :: Maybe RegAddr        -- ^ Nothing implies that the divider is idle.
   , divIter                  :: Unsigned 5           -- ^ Iteration counter
+  , divEmit                  :: Bool                 -- ^ Emitting value (iff divIter == 17)
   , divSigned                :: Bool
   , divOutputRem             :: Bool
   , divNegateOutput          :: Bool                 -- ^ Whether or not the output needs to be negated.
@@ -127,7 +128,7 @@ data DividerState = DividerState
   } deriving (Generic, NFDataX)
 
 instance Default DividerState where
-  def = DividerState Nothing 0 False False False (repeat 0) 0 0
+  def = DividerState Nothing 0 False False False False (repeat 0) 0 0
 
 
 -- | 17 cycle divider circuit that processes one input at a time.
@@ -142,22 +143,18 @@ divider flush maybeRdAndOpIn xyIn =
 
   where
     output :: DividerState -> (Maybe RegAddr, Bool, Value)
-    output (DividerState maybeRd it _ outrem negateout _ q r)
-      | it == 17 =
-        let outu = if outrem    then r else q
-            out  = if negateout then -outu else outu
-        in  (maybeRd, True, out)
-      | otherwise   = (maybeRd, False, 0)
+    output (DividerState maybeRd _ emit _ outrem _ _ q r) =
+      (maybeRd, emit, if outrem then r else q)
 
     go :: DividerState -> (Bool, Maybe (RegAddr, ALUDivOp), (Value, Value)) -> DividerState
     go state (flush, maybeRdAndOp, (x,y))
-      | flush || isNothing (divRd state) || divIter state == 17 = case maybeRdAndOp of
+      | flush || isNothing (divRd state) || divEmit state = case maybeRdAndOp of
           Nothing       -> def
-          Just (rd, op) -> DividerState (Just rd) 0 signed outputRem False (repeat 0) x y
+          Just (rd, op) -> DividerState (Just rd) 0 False signed outputRem False (repeat 0) x y
             where
               signed    = op == Div || op == Rem
               outputRem = op == Rem || op == Remu
-    go state@(DividerState _ it signed outputRem _ _ x y) _
+    go state@(DividerState _ it _ signed outputRem _ _ x y) _
       | it == 0 = newState
         where
           xNeg = signed && msb x == 1
@@ -179,7 +176,7 @@ divider flush maybeRdAndOpIn xyIn =
                     y3   = y2 `add` absy
                     pmds = y3 :> zeroExtend y2 :> zeroExtend absy :> Nil
                 in  state { divIter = 1, divNegateOutput = negateOutput, divPreMultipliedDivisors = pmds, divQuot = absx, divRem = 0 }
-    go state@(DividerState _ it _ _ _ pmDivisors q r) _ =
+    go state@(DividerState _ it _ _ _ negateout pmDivisors q r) _ =
         let pr        = unpack (slice d29 d0 r ++# slice d31 d30 q) :: Unsigned 32
             -- <pr - 3*d, pr - 2*d, pr - d>
             subs      = map (pr `sub`) pmDivisors
@@ -189,7 +186,11 @@ divider flush maybeRdAndOpIn xyIn =
               Nothing   -> (0, pr)
               (Just ix) -> (3 - (pack ix :: BitVector 2), truncateB $ subs !! ix)
             q' = unpack $ slice d29 d0 q ++# cqb
-        in  state { divIter = it + 1, divQuot = q', divRem = r' }
+
+            emitNext = msb it == 1 -- it == 16
+            qout = if emitNext && negateout then -q' else q'
+            rout = if emitNext && negateout then -r' else r'
+        in  state { divIter = it + 1, divEmit = emitNext, divQuot = qout, divRem = rout }
 
 {-
 dividerPipelined

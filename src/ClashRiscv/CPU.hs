@@ -169,7 +169,7 @@ pipeline =
 
     mem_dataRamIn' = mux ex_prevDivEmitting ex_prevDataRamIn ex_dataRamIn -- NOTE: from EX
     -- Handle memory-mapped I/O first.
-    -- mem_isMMIO' is valid immediately (in EX), the other two are valid in MEM.
+    -- mem_isMmio' is valid immediately (in EX), the other two are valid in MEM.
     (mem_isMmio', mem_mmioVals, mem_maybeMMIOOut) = mmio mem_dataRamIn'
     -- Only access data RAM if the RAM address is not memory mapped.
     mem_dataRamOut' = dataRAM $ mux mem_isMmio' (pure def) mem_dataRamIn'

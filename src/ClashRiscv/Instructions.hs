@@ -49,6 +49,7 @@ data ALUIMOp
   deriving (Show, Generic, NFDataX)
 
 decode :: Unsigned 32 -> Maybe Instruction
+{-# INLINE decode #-}
 decode word = case opcode of
   0b0110111 -> withRd $ Lui simm_u
   0b0010111 -> withRd $ Auipc simm_u
@@ -115,6 +116,7 @@ decode word = case opcode of
 
 
 decodeAluOp :: Bool -> BitVector 3 -> BitVector 7 -> Maybe ALUIMOp
+{-# INLINE decodeAluOp #-}
 decodeAluOp False funct3 1
   | funct3 < 4 = Just . ALUM $ (Mul :> Mulh :> Mulhsu :> Mulhu :> Nil) !! funct3
   | otherwise  = Just . ALUD $ (Div :> Divu :> Rem :> Remu :> Nil) !! (funct3 - 4)

@@ -30,7 +30,9 @@ dataRAM dataRamIn = calcReadVal <$> oldRamIn <*> ramOut
 
 calcWriteVal :: DataRAMIn -> Maybe Value
 {-# INLINE calcWriteVal #-}
-calcWriteVal ramIn = do
+calcWriteVal ramIn = writeVal ramIn -- FIXME implement byte enable
+{-
+do
   -- FIXME w needs to be combined with the preexisting ram value if not DR_W
   w <- writeVal ramIn
   return $ shiftWord (truncateWord w)
@@ -48,7 +50,7 @@ calcWriteVal ramIn = do
       1 -> w `shiftL` 8
       2 -> w `shiftL` 16
       3 -> w `shiftL` 24
-
+-}
 
 calcReadVal :: DataRAMIn -> DataRAMOut -> DataRAMOut
 {-# INLINE calcReadVal #-}
