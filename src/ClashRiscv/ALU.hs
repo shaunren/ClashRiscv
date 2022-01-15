@@ -118,7 +118,7 @@ multiplier mulOpIn xyIn = out
 
 
 data DividerState = DividerState
-  { divRd                    :: Maybe RegAddr       -- Nothing implies the divider is idle.
+  { divRd                    :: Maybe RegAddr       -- ^ Nothing implies that the divider is idle.
   , divIter                  :: Unsigned 5          -- ^ Iteration counter
   , divOutputRem             :: Bool
   , divNegateOutput          :: Bool                -- ^ Whether or not the output needs to be negated
