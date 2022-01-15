@@ -6,8 +6,7 @@ import           ClashRiscv.ALU
 import           ClashRiscv.Instructions        ( ALUIMOp(..)
                                                 , Instruction(..)
                                                 , InstructionWithDstReg(..)
-                                                , LoadOp
-                                                , StoreOp
+                                                , DataOp
                                                 , isJump
                                                 )
 import           ClashRiscv.Types
@@ -28,8 +27,8 @@ type ExDivUOp = Maybe ALUDivOp
 
 data MemUOp
   = MemU_Nop
-  | MemU_Store StoreOp
-  | MemU_Load LoadOp
+  | MemU_Store DataOp
+  | MemU_Load DataOp
   deriving (Show, Eq, Generic, NFDataX)
 
 data WbUOp

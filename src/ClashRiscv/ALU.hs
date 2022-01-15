@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric  #-}
 module ClashRiscv.ALU where
 
 import Clash.Prelude
@@ -73,7 +72,7 @@ multiplier
 {-# INLINE multiplier #-}
 multiplier mulOpIn xyIn = out
   where    
-    stage1F mulOp (x,y) = (isMul, ll, hh, mid, xhCorr, yhCorr)
+    stage1F mulOp (x,y) = (isMul, ll, hh, mid, hCorr)
       where
         xl, xh, yl, yh :: Unsigned 16
         xl = bitCoerce $ slice d15 d0 x
@@ -95,25 +94,24 @@ multiplier mulOpIn xyIn = out
 
         xhCorr = if xNeg then y else 0
         yhCorr = if yNeg then x else 0
+        hCorr = -(xhCorr + yhCorr)
 
         isMul = mulOp == Mul
 
-    stage1Out = register (True, 0, 0, 0, 0, 0) $ stage1F <$> mulOpIn <*> xyIn
+    stage1Out = register (True, 0, 0, 0, 0) $ stage1F <$> mulOpIn <*> xyIn
 
-    stage2F :: (Bool, Unsigned 32, Unsigned 32, Unsigned 33, Unsigned 32, Unsigned 32) -> (Bool, Unsigned 32, Unsigned 32, Unsigned 32)
-    stage2F (isMul, ll, hh, mid, xhCorr, yhCorr) = (isMul, outl, outhU, hCorr)
+    stage2F :: (Bool, Unsigned 32, Unsigned 32, Unsigned 33, Unsigned 32) -> (Bool, Unsigned 32, Unsigned 32)
+    stage2F (isMul, ll, hh, mid, hCorr) = (isMul, outl, outh)
       where
         outl' = ll `add` ((truncateB mid :: Unsigned 32) `shiftL` 16)
         outl  = truncateB outl'
-        -- Unsigned upper half result
-        outhU = (zeroExtend $ bitCoerce $ slice d32 d16 mid) + hh + fromIntegral (msb outl')
-        hCorr = -(xhCorr + yhCorr)
+        outh = (zeroExtend $ bitCoerce $ slice d32 d16 mid) + hh + fromIntegral (msb outl') + hCorr
 
-    stage2Out = register (True, 0, 0, 0) $ stage2F <$> stage1Out
+    stage2Out = register (True, 0, 0) $ stage2F <$> stage1Out
 
-    stage3F (isMul, outl, outhU, hCorr)
+    stage3F (isMul, outl, outh)
       | isMul     = outl
-      | otherwise = outhU + hCorr
+      | otherwise = outh
     out = stage3F <$> stage2Out
 
 
@@ -138,18 +136,18 @@ divider
   => Signal dom Bool                         -- ^ flush unit
   -> Signal dom (Maybe (RegAddr, ALUDivOp))
   -> Signal dom (Value, Value)
-  -> Signal dom (Maybe RegAddr, Maybe Value) -- ^ if rd is Just, the divider is busy.
+  -> Signal dom (Maybe RegAddr, Bool, Value) -- ^ if rd is Just, the divider is busy.
 divider flush maybeRdAndOpIn xyIn =
   moore go output def $ bundle (flush, maybeRdAndOpIn, xyIn)
 
   where
-    output :: DividerState -> (Maybe RegAddr, Maybe Value)
+    output :: DividerState -> (Maybe RegAddr, Bool, Value)
     output (DividerState maybeRd it _ outrem negateout _ q r)
       | it == 17 =
         let outu = if outrem    then r else q
             out  = if negateout then -outu else outu
-        in  (maybeRd, Just out)
-      | otherwise   = (maybeRd, Nothing)
+        in  (maybeRd, True, out)
+      | otherwise   = (maybeRd, False, 0)
 
     go :: DividerState -> (Bool, Maybe (RegAddr, ALUDivOp), (Value, Value)) -> DividerState
     go state (flush, maybeRdAndOp, (x,y))

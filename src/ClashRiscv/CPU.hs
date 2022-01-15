@@ -100,20 +100,12 @@ pipeline =
         runMemOp MemU_Nop _ _ = def
         runMemOp (MemU_Store op) imm (x,y) = DataRAMIn {
             addr = x + imm
-          , wordType = case op of
-              S_B -> DR_B
-              S_H -> DR_H
-              S_W -> DR_W
+          , dataOp = op
           , writeVal = Just y
           }
         runMemOp (MemU_Load op) imm (x,_)  = DataRAMIn {
             addr = x + imm
-          , wordType = case op of
-              L_B  -> DR_B
-              L_H  -> DR_H
-              L_W  -> DR_W
-              LU_B -> DR_BU
-              LU_H -> DR_HU
+          , dataOp = op
           , writeVal = Nothing
           }
 
@@ -130,7 +122,7 @@ pipeline =
     ex_prevDataRamIn = register def ex_dataRamIn
 
     -- divider: 16 cycles latency, 2 cycles latency for invalid inputs
-    (ex_maybeDivRd, ex_maybeDiv) =
+    (ex_maybeDivRd, ex_divEmitting, ex_divOut) =
       unbundle $ divider flush (mux stallEx (pure Nothing) $ dividerIn <$> ex_uops') ex_valsIn
       where
         dividerIn u = do
@@ -138,7 +130,6 @@ pipeline =
           op <- exDivUOp u
           return (rd, op)
         flush = (isJust . rdReg <$> ex_uops') .&&. (fmap rdReg ex_uops' .==. ex_maybeDivRd)
-    ex_divEmitting = isJust <$> ex_maybeDiv
 
     -- Whether or not EX needs to be bubbled in the next cycle (excluding when div emits).
     ex_bubbleEx' = shouldBubble <$> ex_uops <*> ex_maybeDivRd <*> ex_divEmitting <*> id_rs
@@ -169,18 +160,19 @@ pipeline =
           | prevDivEmitting = prevUopsFromEx
           | otherwise       = uopsFromEx
 
-    mem_in = selectIn <$> ex_prevDivEmitting <*> ex_divEmitting <*> ex_maybeDiv <*> ex_out <*> ex_prevOut
+    mem_in = selectIn <$> ex_prevDivEmitting <*> ex_divEmitting <*> ex_divOut <*> ex_out <*> ex_prevOut
       where
-        selectIn prevDivEmitting divEmitting maybeDiv exOut exPrevOut
-          | divEmitting     = fromJust maybeDiv
+        selectIn prevDivEmitting divEmitting divOut exOut exPrevOut
+          | divEmitting     = divOut
           | prevDivEmitting = exPrevOut
           | otherwise       = exOut
 
     mem_dataRamIn' = mux ex_prevDivEmitting ex_prevDataRamIn ex_dataRamIn -- NOTE: from EX
     -- Handle memory-mapped I/O first.
-    (mem_mmioVals, mem_maybeMMIOOut) = mmio mem_dataRamIn'
+    -- mem_isMMIO' is valid immediately (in EX), the other two are valid in MEM.
+    (mem_isMmio', mem_mmioVals, mem_maybeMMIOOut) = mmio mem_dataRamIn'
     -- Only access data RAM if the RAM address is not memory mapped.
-    mem_dataRamOut' = dataRAM $ mux (isJust <$> mem_maybeMMIOOut) (pure def) mem_dataRamIn'
+    mem_dataRamOut' = dataRAM $ mux mem_isMmio' (pure def) mem_dataRamIn'
 
     mem_maybeJAddr = register Nothing ex_maybeJAddr
 

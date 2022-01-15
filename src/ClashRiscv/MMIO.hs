@@ -17,8 +17,8 @@ data MMIOData = MMIOData { mmioLEDs :: BitVector 8 }
 mmio
   :: HiddenClockResetEnable dom
   => Signal dom DataRAMIn
-  -> (Signal dom MMIOData, Signal dom (Maybe Value)) -- ^ Delayed by 1 cycle.
-mmio dataRamIn = (mmioVals, out)
+  -> (Signal dom Bool, Signal dom MMIOData, Signal dom (Maybe Value)) -- ^ The 2nd and 3rd signals are delayed by 1 cycle.
+mmio dataRamIn = (isMMIO, mmioVals, out)
   where
     isMMIO   = fmap addr dataRamIn .==. 0x40000000
 
@@ -26,7 +26,7 @@ mmio dataRamIn = (mmioVals, out)
 
     updateVals ramIn is_mmio vals = fromMaybe vals $ do
         guard is_mmio
-        wr <- calcWriteVal ramIn
+        wr <- writeVal ramIn
         return $ vals { mmioLEDs = truncateB (bitCoerce wr) }
 
     out = register Nothing $ liftA2

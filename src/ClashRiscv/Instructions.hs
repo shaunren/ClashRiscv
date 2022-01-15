@@ -12,8 +12,7 @@ type Imm12 = Signed 12
 
 type DstReg = Register
 
-data LoadOp = L_B | L_H | L_W | LU_B | LU_H deriving (Show, Eq, Generic, NFDataX)
-data StoreOp = S_B | S_H | S_W deriving (Show, Eq, Generic, NFDataX)
+data DataOp = D_B | D_H | D_W | DU_B | DU_H deriving (Show, Eq, Generic, NFDataX)
 
 class HasDstReg a where
   -- rd == 0 implies no dest register
@@ -22,7 +21,7 @@ class HasDstReg a where
 data Instruction
   = Nop
   | Branch BranchOp Register Register Imm12
-  | Store StoreOp Register Register Imm12
+  | Store DataOp Register Register Imm12
   | Fence  -- TODO not implemented
   | ECall  -- TODO
   | EBreak -- TODO
@@ -38,7 +37,7 @@ data InstructionWithDstReg
   | Auipc Imm20
   | Jal Imm20
   | Jalr Register Imm12
-  | Load LoadOp Register Imm12
+  | Load DataOp Register Imm12
   | AluImm ALUIMOp Register Imm12
   | AluReg ALUIMOp Register Register
   deriving (Show, Generic, NFDataX)
@@ -64,16 +63,16 @@ decode word = case opcode of
     | funct3 == 0b111 -> Just $ Branch B_GEU rs1 rs2 simm_sb
     | otherwise       -> Nothing
   0b0000011
-    | funct3 == 0b000 -> withRd $ Load L_B  rs1 simm_i
-    | funct3 == 0b001 -> withRd $ Load L_H  rs1 simm_i
-    | funct3 == 0b010 -> withRd $ Load L_W  rs1 simm_i
-    | funct3 == 0b100 -> withRd $ Load LU_B rs1 simm_i
-    | funct3 == 0b101 -> withRd $ Load LU_H rs1 simm_i
+    | funct3 == 0b000 -> withRd $ Load D_B  rs1 simm_i
+    | funct3 == 0b001 -> withRd $ Load D_H  rs1 simm_i
+    | funct3 == 0b010 -> withRd $ Load D_W  rs1 simm_i
+    | funct3 == 0b100 -> withRd $ Load DU_B rs1 simm_i
+    | funct3 == 0b101 -> withRd $ Load DU_H rs1 simm_i
     | otherwise       -> Nothing
   0b0100011
-    | funct3 == 0b000 -> Just $ Store S_B rs1 rs2 simm_s
-    | funct3 == 0b001 -> Just $ Store S_H rs1 rs2 simm_s
-    | funct3 == 0b010 -> Just $ Store S_W rs1 rs2 simm_s
+    | funct3 == 0b000 -> Just $ Store D_B rs1 rs2 simm_s
+    | funct3 == 0b001 -> Just $ Store D_H rs1 rs2 simm_s
+    | funct3 == 0b010 -> Just $ Store D_W rs1 rs2 simm_s
     | otherwise       -> Nothing
   0b0010011 -> do
     aluOp <- decodeAluOp True funct3 funct7

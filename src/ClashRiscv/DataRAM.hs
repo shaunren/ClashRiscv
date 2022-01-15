@@ -3,13 +3,12 @@ module ClashRiscv.DataRAM where
 
 import Clash.Prelude
 import ClashRiscv.Types ( Value, Addr )
+import ClashRiscv.Instructions ( DataOp(..) )
 
-data DataRAMWordType = DR_B | DR_H | DR_W | DR_BU | DR_HU deriving (Eq, Show, Generic, NFDataX)
-
-data DataRAMIn = DataRAMIn { addr :: Addr, wordType :: DataRAMWordType, writeVal :: Maybe Value }
+data DataRAMIn = DataRAMIn { addr :: Addr, dataOp :: DataOp, writeVal :: Maybe Value }
   deriving (Eq, Show, Generic, NFDataX)
 instance Default DataRAMIn where
-  def = DataRAMIn { addr = 0, wordType = DR_W, writeVal = Nothing }
+  def = DataRAMIn { addr = 0, dataOp = D_W, writeVal = Nothing }
 type DataRAMOut  = Value -- Assumed available 1 cycle after holding DataRAMOut
 
 
@@ -37,12 +36,12 @@ calcWriteVal ramIn = do
   return $ shiftWord (truncateWord w)
 
   where
-    truncateWord w = case wordType ramIn of
-      DR_W  -> w
-      DR_B  -> zeroExtend (truncateB w :: Unsigned 8)
-      DR_H  -> zeroExtend (truncateB w :: Unsigned 16)
-      DR_BU -> zeroExtend (truncateB w :: Unsigned 8)
-      DR_HU -> zeroExtend (truncateB w :: Unsigned 16)
+    truncateWord w = case dataOp ramIn of
+      D_W  -> w
+      D_B  -> zeroExtend (truncateB w :: Unsigned 8)
+      D_H  -> zeroExtend (truncateB w :: Unsigned 16)
+      DU_B -> zeroExtend (truncateB w :: Unsigned 8)
+      DU_H -> zeroExtend (truncateB w :: Unsigned 16)
 
     shiftWord w = case (truncateB (addr ramIn) :: Unsigned 2) of
       0 -> w
@@ -53,12 +52,12 @@ calcWriteVal ramIn = do
 
 calcReadVal :: DataRAMIn -> DataRAMOut -> DataRAMOut
 {-# INLINE calcReadVal #-}
-calcReadVal oldIn ramOut = case wordType oldIn of
-  DR_W -> ramOut
-  DR_B -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 8) :: Signed 8) :: Signed 32)
-  DR_H -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 16) :: Signed 16) :: Signed 32)
-  DR_BU -> zeroExtend (truncateB rawVal :: Unsigned 8)
-  DR_HU -> zeroExtend (truncateB rawVal :: Unsigned 16)
+calcReadVal oldIn ramOut = case dataOp oldIn of
+  D_W  -> ramOut
+  D_B  -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 8) :: Signed 8) :: Signed 32)
+  D_H  -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 16) :: Signed 16) :: Signed 32)
+  DU_B -> zeroExtend (truncateB rawVal :: Unsigned 8)
+  DU_H -> zeroExtend (truncateB rawVal :: Unsigned 16)
   where
     -- Value before extension
     rawVal = case (truncateB (addr oldIn) :: Unsigned 2) of
