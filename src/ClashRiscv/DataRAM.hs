@@ -45,7 +45,7 @@ do
       DU_B -> zeroExtend (truncateB w :: Unsigned 8)
       DU_H -> zeroExtend (truncateB w :: Unsigned 16)
 
-    shiftWord w = case (truncateB (addr ramIn) :: Unsigned 2) of
+    shiftWord w = case slice d1 d0 (addr ramIn) of
       0 -> w
       1 -> w `shiftL` 8
       2 -> w `shiftL` 16
@@ -56,13 +56,13 @@ calcReadVal :: DataRAMIn -> DataRAMOut -> DataRAMOut
 {-# INLINE calcReadVal #-}
 calcReadVal oldIn ramOut = case dataOp oldIn of
   D_W  -> ramOut
-  D_B  -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 8) :: Signed 8) :: Signed 32)
-  D_H  -> bitCoerce (signExtend (bitCoerce (truncateB rawVal :: Unsigned 16) :: Signed 16) :: Signed 32)
-  DU_B -> zeroExtend (truncateB rawVal :: Unsigned 8)
-  DU_H -> zeroExtend (truncateB rawVal :: Unsigned 16)
+  D_B  -> bitCoerce $ signExtend $ slice d7 d0 rawVal
+  D_H  -> bitCoerce $ signExtend $ slice d15 d0 rawVal
+  DU_B -> bitCoerce $ zeroExtend $ slice d7 d0 rawVal
+  DU_H -> bitCoerce $ zeroExtend $ slice d15 d0 rawVal
   where
     -- Value before extension
-    rawVal = case (truncateB (addr oldIn) :: Unsigned 2) of
+    rawVal = case slice d1 d0 (addr oldIn) of
       0 -> ramOut
       1 -> ramOut `shiftR` 8
       2 -> ramOut `shiftR` 16
